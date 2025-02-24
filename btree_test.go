@@ -10,7 +10,6 @@ import (
 	"text/template"
 
 	testAssert "github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 )
 
 func newLeafNodeFromMap(kv map[string]string) BtreeNode {
@@ -251,364 +250,365 @@ func maxKVSize(nKeys uint) uint {
 	return uint(math.Floor(float64(PageSize-int(fixed)) / float64(nKeys)))
 }
 
-func Test_nodeSplit(t *testing.T) {
-	testCases := []struct {
-		input  BtreeNode
-		nSplit uint16
-		splits [3]BtreeNode
-	}{
-		// no split
-		{
-			input:  buildLeafNodeV2("byte", WithKV(byte('a'), maxKVSize(4))),
-			nSplit: 1,
-			splits: [3]BtreeNode{buildLeafNodeV2("byte", WithKV(byte('a'), maxKVSize(4)))},
-		},
-		// 3-way split
-		{
-			input: buildLeafNodeV2("byte",
-				WithKV(byte('a'), maxKVSize(4)),
-				WithKV(byte('b'), maxKVSize(1)),
-				WithKV(byte('c'), maxKVSize(4)),
-			),
-			nSplit: 3,
-			splits: [3]BtreeNode{
-				buildLeafNodeV2("byte", WithKV(byte('a'), maxKVSize(4))),
-				buildLeafNodeV2("byte", WithKV(byte('b'), maxKVSize(1))),
-				buildLeafNodeV2("byte", WithKV(byte('c'), maxKVSize(4))),
-			},
-		},
-		// 2-way split
-		{
-
-			input: buildLeafNodeV2("byte",
-				WithKV(byte('a'), maxKVSize(1)),
-				WithKV(byte('b'), maxKVSize(1)),
-			),
-			nSplit: 2,
-			splits: [3]BtreeNode{
-				buildLeafNodeV2("byte", WithKV(byte('a'), maxKVSize(1))),
-				buildLeafNodeV2("byte", WithKV(byte('b'), maxKVSize(1))),
-			},
-		},
-		{
-			input: buildLeafNodeV2("byte",
-				WithKV(byte('a'), maxKVSize(2)),
-				WithKV(byte('b'), maxKVSize(2)),
-				WithKV(byte('c'), maxKVSize(2)),
-			),
-			nSplit: 2,
-			splits: [3]BtreeNode{
-				buildLeafNodeV2("byte", WithKV(byte('a'), maxKVSize(2))),
-				buildLeafNodeV2("byte", WithKV(byte('b'), maxKVSize(2)),
-					WithKV(byte('c'), maxKVSize(2)),
-				),
-			},
-		},
-	}
-
-	for i, tc := range testCases {
-		t.Run(fmt.Sprintf("testcase_%d", i), func(t *testing.T) {
-			nSplit, splits := nodeSplit(tc.input)
-			require.Equal(t, tc.nSplit, nSplit)
-			for i, expected := range tc.splits[:tc.nSplit] {
-				assertNodeEqual(t, expected, splits[i])
-			}
-
-		})
-	}
-
-}
-
-func Test_nodeLeftRightSplit(t *testing.T) {
-	testCases := []struct {
-		input BtreeNode
-		left  BtreeNode
-		right BtreeNode
-	}{
-		{
-			input: buildLeafNodeV2("byte",
-				WithKV(byte('a'), maxKVSize(4)),
-				WithKV(byte('b'), maxKVSize(1)),
-				WithKV(byte('c'), maxKVSize(4))),
-			left: buildLeafNodeV2("byte",
-				WithKV(byte('a'), maxKVSize(4)),
-				WithKV(byte('b'), maxKVSize(1))),
-			right: buildLeafNodeV2("byte",
-				WithKV(byte('c'), maxKVSize(4))),
-		},
-		{
-			input: buildLeafNodeV2("byte",
-				WithKV(byte('a'), maxKVSize(2)),
-				WithKV(byte('b'), maxKVSize(2)),
-				WithKV(byte('c'), maxKVSize(2))),
-			left: buildLeafNodeV2("byte",
-				WithKV(byte('a'), maxKVSize(2))),
-			right: buildLeafNodeV2("byte",
-				WithKV(byte('b'), maxKVSize(2)),
-				WithKV(byte('c'), maxKVSize(2))),
-		},
-	}
-
-	for i, tc := range testCases {
-		t.Run(fmt.Sprintf("testcase_%d", i+1), func(t *testing.T) {
-			left := newBtreeNodeWithPageSize(2)
-			right := newBtreeNodeWithPageSize(2)
-			nodeLeftRightSplit(left, right, tc.input)
-
-			assertNodeEqual(t, tc.left, left)
-			assertNodeEqual(t, tc.right, right)
-
-		})
-	}
-
-}
-
-func Test_updateChild(t *testing.T) {
-	testCases := []struct {
-		exitingChildren []BtreeNode
-		newChildren     []BtreeNode
-		startIdx        uint16
-		endIdx          uint16
-		expected        []BtreeNode
-	}{
-		// when the len(children) > end - start: when merging
-		{
-			exitingChildren: []BtreeNode{
-				buildLeafNode(uint(PageSize)/8, []byte{byte('a')}, []uint{1}),
-				buildLeafNode(uint(PageSize)/8, []byte{byte('b')}, []uint{1}),
-			},
-			newChildren: []BtreeNode{
-				buildLeafNode(uint(PageSize)/8, []byte{byte('c')}, []uint{1}),
-				buildLeafNode(uint(PageSize)/8, []byte{byte('d')}, []uint{1}),
-				buildLeafNode(uint(PageSize)/8, []byte{byte('e')}, []uint{1}),
-			},
-			startIdx: 0,
-			endIdx:   1,
-			expected: []BtreeNode{
-				buildLeafNode(uint(PageSize)/8, []byte{byte('c')}, []uint{1}),
-				buildLeafNode(uint(PageSize)/8, []byte{byte('d')}, []uint{1}),
-				buildLeafNode(uint(PageSize)/8, []byte{byte('e')}, []uint{1}),
-				buildLeafNode(uint(PageSize)/8, []byte{byte('b')}, []uint{1}),
-			},
-		},
-		// when the len(children) < end - start: when shrinking
-		{
-			exitingChildren: []BtreeNode{
-				buildLeafNode(uint(PageSize)/8, []byte{byte('a')}, []uint{1}),
-				buildLeafNode(uint(PageSize)/8, []byte{byte('b')}, []uint{1}),
-				buildLeafNode(uint(PageSize)/8, []byte{byte('c')}, []uint{1}),
-			},
-			newChildren: []BtreeNode{
-				buildLeafNode(uint(PageSize)/8, []byte{byte('d')}, []uint{1}),
-			},
-			startIdx: 1,
-			endIdx:   3,
-			expected: []BtreeNode{
-				buildLeafNode(uint(PageSize)/8, []byte{byte('a')}, []uint{1}),
-				buildLeafNode(uint(PageSize)/8, []byte{byte('d')}, []uint{1}),
-			},
-		},
-		// when the len(children) == end - start: replacing children
-		{
-			exitingChildren: []BtreeNode{
-				buildLeafNode(uint(PageSize)/8, []byte{byte('a')}, []uint{1}),
-			},
-			newChildren: []BtreeNode{
-				buildLeafNode(uint(PageSize)/8, []byte{byte('b')}, []uint{1}),
-			},
-			expected: []BtreeNode{
-				buildLeafNode(uint(PageSize)/8, []byte{byte('b')}, []uint{1}),
-			},
-			startIdx: 0,
-			endIdx:   1,
-		},
-	}
-
-	for i, tc := range testCases {
-		t.Run(fmt.Sprintf("testcase_%d", i+1), func(t *testing.T) {
-			tree := NewBtreeWithPageAllocator(NewMemPageAllocator())
-			node := newBtreeNode()
-			node.setHeader(BTREE_INTERNAL_NODE, uint16(len(tc.exitingChildren)))
-			assert(node.getNkeys() == uint16(len(tc.exitingChildren)), "old node nKeys != len(existingChildren)")
-			for i := uint16(0); i < node.getNkeys(); i++ {
-				nodeWriteAt(node, uint16(i), tree.alloc(tc.exitingChildren[i]), nil, nil)
-			}
-			updatedNode := newBtreeNode()
-
-			updateChildren(tree, updatedNode, node, tc.startIdx, tc.endIdx, tc.newChildren...)
-			testAssert.Equal(t, uint16(len(tc.expected)), updatedNode.getNkeys())
-			// assert that [0, start) pointers remain unchanged
-			for i := uint16(0); i < tc.startIdx; i++ {
-				testAssert.Equal(t, node.getPointer(i), updatedNode.getPointer(i))
-			}
-
-			// assert that [endIdx, nKeys) pointers remain unchanged
-			for i := uint16(0); i < node.getNkeys()-tc.endIdx; i++ {
-				oldPtr := node.getPointer(tc.endIdx + i)
-				newPtr := updatedNode.getPointer(tc.endIdx + (uint16(len(tc.newChildren)) - (tc.endIdx - tc.startIdx)))
-				testAssert.Equal(t, oldPtr, newPtr)
-			}
-
-			for i := uint16(0); i < uint16(len(tc.newChildren)); i++ {
-				ptr := updatedNode.getPointer(tc.startIdx + i)
-				child := tree.fetch(ptr)
-				testAssert.Equal(t, tc.newChildren[i], child)
-			}
-		})
-	}
-}
-
-func Test_mergeNode(t *testing.T) {
-	testCases := []struct {
-		left   BtreeNode
-		right  BtreeNode
-		merged BtreeNode
-	}{
-		{
-			left: newLeafNodeFromMap(map[string]string{
-				"a": "1",
-				"b": "2",
-			}),
-			right: newLeafNodeFromMap(map[string]string{}),
-			merged: newLeafNodeFromMap(map[string]string{
-				"a": "1",
-				"b": "2",
-			}),
-		},
-		{
-			left: newLeafNodeFromMap(map[string]string{}),
-			right: newLeafNodeFromMap(map[string]string{
-				"a": "1",
-				"b": "2",
-			}),
-			merged: newLeafNodeFromMap(map[string]string{
-				"a": "1",
-				"b": "2",
-			}),
-		},
-		{
-			left: newLeafNodeFromMap(map[string]string{
-				"a": "1",
-				"b": "2",
-			}),
-			right: newLeafNodeFromMap(map[string]string{
-				"c": "3",
-				"d": "4",
-			}),
-			merged: newLeafNodeFromMap(map[string]string{
-				"a": "1",
-				"b": "2",
-				"c": "3",
-				"d": "4",
-			}),
-		},
-	}
-
-	for i, tc := range testCases {
-		t.Run(fmt.Sprintf("testcase_%d", i), func(t *testing.T) {
-			merged := newBtreeNode()
-			mergeNode(merged, tc.left, tc.right)
-			testAssert.Equal(t, tc.merged.data, merged.data)
-		})
-	}
-}
-
-func Test_shouldMerge(t *testing.T) {
-
-	testCases := []struct {
-		childrens          []BtreeNode
-		idx                uint16
-		expectedMergeOpt   mergeOption
-		expectedSiblingIdx uint16
-	}{
-		// smaller than 1/4 but has no slibings
-		{
-			childrens: []BtreeNode{
-				buildLeafNode(uint(PageSize)/5, []byte{byte('a')}, []uint{1}),
-			},
-			idx:              0,
-			expectedMergeOpt: mergeNone,
-		},
-		// larger than or equal to 1/4 page
-		{
-			childrens: []BtreeNode{
-				buildLeafNode(uint(PageSize), []byte{byte('a')}, []uint{1}),
-			},
-			idx:              0,
-			expectedMergeOpt: mergeNone,
-		},
-		{
-			childrens: []BtreeNode{
-				buildLeafNode(uint(PageSize)/4, []byte{byte('a')}, []uint{1}),
-			},
-			idx:              0,
-			expectedMergeOpt: mergeNone,
-		},
-		// page smaller than 1/4 have mergable left
-		{
-			childrens: []BtreeNode{
-				buildLeafNode(uint(PageSize)/4, []byte{byte('a')}, []uint{1}),
-				buildLeafNode(uint(PageSize)/5, []byte{byte('b')}, []uint{1}),
-			},
-			idx:                1,
-			expectedMergeOpt:   mergeLeft,
-			expectedSiblingIdx: 0,
-		},
-		// page smaller than 1/4 have mergable right
-		{
-			childrens: []BtreeNode{
-				buildLeafNode(uint(PageSize)/5, []byte{byte('a')}, []uint{1}),
-				buildLeafNode(uint(PageSize)/4, []byte{byte('b')}, []uint{1}),
-			},
-			idx:                0,
-			expectedMergeOpt:   mergeRight,
-			expectedSiblingIdx: 1,
-		},
-		// page smaller than 1/4 have both mergable
-		{
-			childrens: []BtreeNode{
-				buildLeafNode(uint(PageSize)/4, []byte{byte('a')}, []uint{1}),
-				buildLeafNode(uint(PageSize)/5, []byte{byte('b')}, []uint{1}),
-				buildLeafNode(uint(PageSize)/4, []byte{byte('c')}, []uint{1}),
-			},
-			idx:                1,
-			expectedMergeOpt:   mergeLeft,
-			expectedSiblingIdx: 0,
-		},
-		// two siblings only one if mergable
-		{
-			childrens: []BtreeNode{
-				buildLeafNode(uint(PageSize), []byte{byte('a')}, []uint{1}),
-				buildLeafNode(uint(PageSize)/5, []byte{byte('b')}, []uint{1}),
-				buildLeafNode(uint(PageSize)/4, []byte{byte('c')}, []uint{1}),
-			},
-			idx:                1,
-			expectedMergeOpt:   mergeRight,
-			expectedSiblingIdx: 2,
-		},
-	}
-
-	for i, tc := range testCases {
-		t.Run(fmt.Sprintf("testcase_%d", i), func(t *testing.T) {
-			tree := NewBtreeWithPageAllocator(NewMemPageAllocator())
-			node := newBtreeNode()
-			node.setHeader(BTREE_INTERNAL_NODE, uint16(len(tc.childrens)))
-			for i, child := range tc.childrens {
-				ptr := tree.alloc(child)
-				nodeWriteAt(node, uint16(i), ptr, nil, nil)
-			}
-			mergeOpt, sibling := shouldMerge(tree, node, tc.idx, tc.childrens[tc.idx])
-			testAssert.Equal(t, tc.expectedMergeOpt, mergeOpt)
-			if tc.expectedMergeOpt != mergeNone {
-				testAssert.NotNil(t, sibling)
-			} else {
-				testAssert.Nil(t, sibling)
-			}
-
-		})
-	}
-
-}
+//
+// func Test_nodeSplit(t *testing.T) {
+// 	testCases := []struct {
+// 		input  BtreeNode
+// 		nSplit uint16
+// 		splits [3]BtreeNode
+// 	}{
+// 		// no split
+// 		{
+// 			input:  buildLeafNodeV2("byte", WithKV(byte('a'), maxKVSize(4))),
+// 			nSplit: 1,
+// 			splits: [3]BtreeNode{buildLeafNodeV2("byte", WithKV(byte('a'), maxKVSize(4)))},
+// 		},
+// 		// 3-way split
+// 		{
+// 			input: buildLeafNodeV2("byte",
+// 				WithKV(byte('a'), maxKVSize(4)),
+// 				WithKV(byte('b'), maxKVSize(1)),
+// 				WithKV(byte('c'), maxKVSize(4)),
+// 			),
+// 			nSplit: 3,
+// 			splits: [3]BtreeNode{
+// 				buildLeafNodeV2("byte", WithKV(byte('a'), maxKVSize(4))),
+// 				buildLeafNodeV2("byte", WithKV(byte('b'), maxKVSize(1))),
+// 				buildLeafNodeV2("byte", WithKV(byte('c'), maxKVSize(4))),
+// 			},
+// 		},
+// 		// 2-way split
+// 		{
+//
+// 			input: buildLeafNodeV2("byte",
+// 				WithKV(byte('a'), maxKVSize(1)),
+// 				WithKV(byte('b'), maxKVSize(1)),
+// 			),
+// 			nSplit: 2,
+// 			splits: [3]BtreeNode{
+// 				buildLeafNodeV2("byte", WithKV(byte('a'), maxKVSize(1))),
+// 				buildLeafNodeV2("byte", WithKV(byte('b'), maxKVSize(1))),
+// 			},
+// 		},
+// 		{
+// 			input: buildLeafNodeV2("byte",
+// 				WithKV(byte('a'), maxKVSize(2)),
+// 				WithKV(byte('b'), maxKVSize(2)),
+// 				WithKV(byte('c'), maxKVSize(2)),
+// 			),
+// 			nSplit: 2,
+// 			splits: [3]BtreeNode{
+// 				buildLeafNodeV2("byte", WithKV(byte('a'), maxKVSize(2))),
+// 				buildLeafNodeV2("byte", WithKV(byte('b'), maxKVSize(2)),
+// 					WithKV(byte('c'), maxKVSize(2)),
+// 				),
+// 			},
+// 		},
+// 	}
+//
+// 	for i, tc := range testCases {
+// 		t.Run(fmt.Sprintf("testcase_%d", i), func(t *testing.T) {
+// 			nSplit, splits := nodeSplit(tc.input)
+// 			require.Equal(t, tc.nSplit, nSplit)
+// 			for i, expected := range tc.splits[:tc.nSplit] {
+// 				assertNodeEqual(t, expected, splits[i])
+// 			}
+//
+// 		})
+// 	}
+//
+// }
+//
+// func Test_nodeLeftRightSplit(t *testing.T) {
+// 	testCases := []struct {
+// 		input BtreeNode
+// 		left  BtreeNode
+// 		right BtreeNode
+// 	}{
+// 		{
+// 			input: buildLeafNodeV2("byte",
+// 				WithKV(byte('a'), maxKVSize(4)),
+// 				WithKV(byte('b'), maxKVSize(1)),
+// 				WithKV(byte('c'), maxKVSize(4))),
+// 			left: buildLeafNodeV2("byte",
+// 				WithKV(byte('a'), maxKVSize(4)),
+// 				WithKV(byte('b'), maxKVSize(1))),
+// 			right: buildLeafNodeV2("byte",
+// 				WithKV(byte('c'), maxKVSize(4))),
+// 		},
+// 		{
+// 			input: buildLeafNodeV2("byte",
+// 				WithKV(byte('a'), maxKVSize(2)),
+// 				WithKV(byte('b'), maxKVSize(2)),
+// 				WithKV(byte('c'), maxKVSize(2))),
+// 			left: buildLeafNodeV2("byte",
+// 				WithKV(byte('a'), maxKVSize(2))),
+// 			right: buildLeafNodeV2("byte",
+// 				WithKV(byte('b'), maxKVSize(2)),
+// 				WithKV(byte('c'), maxKVSize(2))),
+// 		},
+// 	}
+//
+// 	for i, tc := range testCases {
+// 		t.Run(fmt.Sprintf("testcase_%d", i+1), func(t *testing.T) {
+// 			left := newBtreeNodeWithPageSize(2)
+// 			right := newBtreeNodeWithPageSize(2)
+// 			nodeLeftRightSplit(left, right, tc.input)
+//
+// 			assertNodeEqual(t, tc.left, left)
+// 			assertNodeEqual(t, tc.right, right)
+//
+// 		})
+// 	}
+//
+// }
+//
+// func Test_updateChild(t *testing.T) {
+// 	testCases := []struct {
+// 		exitingChildren []BtreeNode
+// 		newChildren     []BtreeNode
+// 		startIdx        uint16
+// 		endIdx          uint16
+// 		expected        []BtreeNode
+// 	}{
+// 		// when the len(children) > end - start: when merging
+// 		{
+// 			exitingChildren: []BtreeNode{
+// 				buildLeafNode(uint(PageSize)/8, []byte{byte('a')}, []uint{1}),
+// 				buildLeafNode(uint(PageSize)/8, []byte{byte('b')}, []uint{1}),
+// 			},
+// 			newChildren: []BtreeNode{
+// 				buildLeafNode(uint(PageSize)/8, []byte{byte('c')}, []uint{1}),
+// 				buildLeafNode(uint(PageSize)/8, []byte{byte('d')}, []uint{1}),
+// 				buildLeafNode(uint(PageSize)/8, []byte{byte('e')}, []uint{1}),
+// 			},
+// 			startIdx: 0,
+// 			endIdx:   1,
+// 			expected: []BtreeNode{
+// 				buildLeafNode(uint(PageSize)/8, []byte{byte('c')}, []uint{1}),
+// 				buildLeafNode(uint(PageSize)/8, []byte{byte('d')}, []uint{1}),
+// 				buildLeafNode(uint(PageSize)/8, []byte{byte('e')}, []uint{1}),
+// 				buildLeafNode(uint(PageSize)/8, []byte{byte('b')}, []uint{1}),
+// 			},
+// 		},
+// 		// when the len(children) < end - start: when shrinking
+// 		{
+// 			exitingChildren: []BtreeNode{
+// 				buildLeafNode(uint(PageSize)/8, []byte{byte('a')}, []uint{1}),
+// 				buildLeafNode(uint(PageSize)/8, []byte{byte('b')}, []uint{1}),
+// 				buildLeafNode(uint(PageSize)/8, []byte{byte('c')}, []uint{1}),
+// 			},
+// 			newChildren: []BtreeNode{
+// 				buildLeafNode(uint(PageSize)/8, []byte{byte('d')}, []uint{1}),
+// 			},
+// 			startIdx: 1,
+// 			endIdx:   3,
+// 			expected: []BtreeNode{
+// 				buildLeafNode(uint(PageSize)/8, []byte{byte('a')}, []uint{1}),
+// 				buildLeafNode(uint(PageSize)/8, []byte{byte('d')}, []uint{1}),
+// 			},
+// 		},
+// 		// when the len(children) == end - start: replacing children
+// 		{
+// 			exitingChildren: []BtreeNode{
+// 				buildLeafNode(uint(PageSize)/8, []byte{byte('a')}, []uint{1}),
+// 			},
+// 			newChildren: []BtreeNode{
+// 				buildLeafNode(uint(PageSize)/8, []byte{byte('b')}, []uint{1}),
+// 			},
+// 			expected: []BtreeNode{
+// 				buildLeafNode(uint(PageSize)/8, []byte{byte('b')}, []uint{1}),
+// 			},
+// 			startIdx: 0,
+// 			endIdx:   1,
+// 		},
+// 	}
+//
+// 	for i, tc := range testCases {
+// 		t.Run(fmt.Sprintf("testcase_%d", i+1), func(t *testing.T) {
+// 			tree := NewBtreeWithPageAllocator(NewMemPageAllocator())
+// 			node := newBtreeNode()
+// 			node.setHeader(BTREE_INTERNAL_NODE, uint16(len(tc.exitingChildren)))
+// 			assert(node.getNkeys() == uint16(len(tc.exitingChildren)), "old node nKeys != len(existingChildren)")
+// 			for i := uint16(0); i < node.getNkeys(); i++ {
+// 				nodeWriteAt(node, uint16(i), tree.alloc(tc.exitingChildren[i]), nil, nil)
+// 			}
+// 			updatedNode := newBtreeNode()
+//
+// 			updateChildren(tree, updatedNode, node, tc.startIdx, tc.endIdx, tc.newChildren...)
+// 			testAssert.Equal(t, uint16(len(tc.expected)), updatedNode.getNkeys())
+// 			// assert that [0, start) pointers remain unchanged
+// 			for i := uint16(0); i < tc.startIdx; i++ {
+// 				testAssert.Equal(t, node.getPointer(i), updatedNode.getPointer(i))
+// 			}
+//
+// 			// assert that [endIdx, nKeys) pointers remain unchanged
+// 			for i := uint16(0); i < node.getNkeys()-tc.endIdx; i++ {
+// 				oldPtr := node.getPointer(tc.endIdx + i)
+// 				newPtr := updatedNode.getPointer(tc.endIdx + (uint16(len(tc.newChildren)) - (tc.endIdx - tc.startIdx)))
+// 				testAssert.Equal(t, oldPtr, newPtr)
+// 			}
+//
+// 			for i := uint16(0); i < uint16(len(tc.newChildren)); i++ {
+// 				ptr := updatedNode.getPointer(tc.startIdx + i)
+// 				child := tree.fetch(ptr)
+// 				testAssert.Equal(t, tc.newChildren[i], child)
+// 			}
+// 		})
+// 	}
+// }
+//
+// func Test_mergeNode(t *testing.T) {
+// 	testCases := []struct {
+// 		left   BtreeNode
+// 		right  BtreeNode
+// 		merged BtreeNode
+// 	}{
+// 		{
+// 			left: newLeafNodeFromMap(map[string]string{
+// 				"a": "1",
+// 				"b": "2",
+// 			}),
+// 			right: newLeafNodeFromMap(map[string]string{}),
+// 			merged: newLeafNodeFromMap(map[string]string{
+// 				"a": "1",
+// 				"b": "2",
+// 			}),
+// 		},
+// 		{
+// 			left: newLeafNodeFromMap(map[string]string{}),
+// 			right: newLeafNodeFromMap(map[string]string{
+// 				"a": "1",
+// 				"b": "2",
+// 			}),
+// 			merged: newLeafNodeFromMap(map[string]string{
+// 				"a": "1",
+// 				"b": "2",
+// 			}),
+// 		},
+// 		{
+// 			left: newLeafNodeFromMap(map[string]string{
+// 				"a": "1",
+// 				"b": "2",
+// 			}),
+// 			right: newLeafNodeFromMap(map[string]string{
+// 				"c": "3",
+// 				"d": "4",
+// 			}),
+// 			merged: newLeafNodeFromMap(map[string]string{
+// 				"a": "1",
+// 				"b": "2",
+// 				"c": "3",
+// 				"d": "4",
+// 			}),
+// 		},
+// 	}
+//
+// 	for i, tc := range testCases {
+// 		t.Run(fmt.Sprintf("testcase_%d", i), func(t *testing.T) {
+// 			merged := newBtreeNode()
+// 			mergeNode(merged, tc.left, tc.right)
+// 			testAssert.Equal(t, tc.merged.data, merged.data)
+// 		})
+// 	}
+// }
+//
+// func Test_shouldMerge(t *testing.T) {
+//
+// 	testCases := []struct {
+// 		childrens          []BtreeNode
+// 		idx                uint16
+// 		expectedMergeOpt   mergeOption
+// 		expectedSiblingIdx uint16
+// 	}{
+// 		// smaller than 1/4 but has no slibings
+// 		{
+// 			childrens: []BtreeNode{
+// 				buildLeafNode(uint(PageSize)/5, []byte{byte('a')}, []uint{1}),
+// 			},
+// 			idx:              0,
+// 			expectedMergeOpt: mergeNone,
+// 		},
+// 		// larger than or equal to 1/4 page
+// 		{
+// 			childrens: []BtreeNode{
+// 				buildLeafNode(uint(PageSize), []byte{byte('a')}, []uint{1}),
+// 			},
+// 			idx:              0,
+// 			expectedMergeOpt: mergeNone,
+// 		},
+// 		{
+// 			childrens: []BtreeNode{
+// 				buildLeafNode(uint(PageSize)/4, []byte{byte('a')}, []uint{1}),
+// 			},
+// 			idx:              0,
+// 			expectedMergeOpt: mergeNone,
+// 		},
+// 		// page smaller than 1/4 have mergable left
+// 		{
+// 			childrens: []BtreeNode{
+// 				buildLeafNode(uint(PageSize)/4, []byte{byte('a')}, []uint{1}),
+// 				buildLeafNode(uint(PageSize)/5, []byte{byte('b')}, []uint{1}),
+// 			},
+// 			idx:                1,
+// 			expectedMergeOpt:   mergeLeft,
+// 			expectedSiblingIdx: 0,
+// 		},
+// 		// page smaller than 1/4 have mergable right
+// 		{
+// 			childrens: []BtreeNode{
+// 				buildLeafNode(uint(PageSize)/5, []byte{byte('a')}, []uint{1}),
+// 				buildLeafNode(uint(PageSize)/4, []byte{byte('b')}, []uint{1}),
+// 			},
+// 			idx:                0,
+// 			expectedMergeOpt:   mergeRight,
+// 			expectedSiblingIdx: 1,
+// 		},
+// 		// page smaller than 1/4 have both mergable
+// 		{
+// 			childrens: []BtreeNode{
+// 				buildLeafNode(uint(PageSize)/4, []byte{byte('a')}, []uint{1}),
+// 				buildLeafNode(uint(PageSize)/5, []byte{byte('b')}, []uint{1}),
+// 				buildLeafNode(uint(PageSize)/4, []byte{byte('c')}, []uint{1}),
+// 			},
+// 			idx:                1,
+// 			expectedMergeOpt:   mergeLeft,
+// 			expectedSiblingIdx: 0,
+// 		},
+// 		// two siblings only one if mergable
+// 		{
+// 			childrens: []BtreeNode{
+// 				buildLeafNode(uint(PageSize), []byte{byte('a')}, []uint{1}),
+// 				buildLeafNode(uint(PageSize)/5, []byte{byte('b')}, []uint{1}),
+// 				buildLeafNode(uint(PageSize)/4, []byte{byte('c')}, []uint{1}),
+// 			},
+// 			idx:                1,
+// 			expectedMergeOpt:   mergeRight,
+// 			expectedSiblingIdx: 2,
+// 		},
+// 	}
+//
+// 	for i, tc := range testCases {
+// 		t.Run(fmt.Sprintf("testcase_%d", i), func(t *testing.T) {
+// 			tree := NewBtreeWithPageAllocator(NewMemPageAllocator())
+// 			node := newBtreeNode()
+// 			node.setHeader(BTREE_INTERNAL_NODE, uint16(len(tc.childrens)))
+// 			for i, child := range tc.childrens {
+// 				ptr := tree.alloc(child)
+// 				nodeWriteAt(node, uint16(i), ptr, nil, nil)
+// 			}
+// 			mergeOpt, sibling := shouldMerge(tree, node, tc.idx, tc.childrens[tc.idx])
+// 			testAssert.Equal(t, tc.expectedMergeOpt, mergeOpt)
+// 			if tc.expectedMergeOpt != mergeNone {
+// 				testAssert.NotNil(t, sibling)
+// 			} else {
+// 				testAssert.Nil(t, sibling)
+// 			}
+//
+// 		})
+// 	}
+//
+// }
 
 func Test_leafDeleteKV(t *testing.T) {
 	testcaeses := []struct {

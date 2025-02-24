@@ -5,8 +5,11 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"syscall"
+
+	"github.com/google/btree"
 )
 
 var (
@@ -16,8 +19,10 @@ var (
 type DB struct {
 	// flushed is the number of pages that are flushed to disk
 	flushed uint64
-	// dirty is a list of pages that need to be flushed to disk
-	dirty    [][]byte
+	// nfree is the number of pages token from the free list
+	nfree int
+	// updates are newly allocated pages or deallocated pages keyed by the pointer.
+	// A nil value means the page is deallocated.
 	file     *os.File
 	fileSize int
 	mmapSize int
@@ -26,13 +31,24 @@ type DB struct {
 	mmaps [][]byte
 	tree  *Btree
 	path  string
+
+	// appended is a list of newly allocated pages that are not yet appended to the file
+	appended *btree.BTree
+
+	freeList *freeList
+	pageIO   PageIO
+	logger   *slog.Logger
 }
 
 func NewDB(path string) *DB {
 	return &DB{
-		path: path,
-		tree: &Btree{},
+		path:     path,
+		tree:     &Btree{},
+		freeList: newFreeList(),
+		appended: btree.New(6),
+		logger:   slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelDebug})),
 	}
+
 }
 
 func (db *DB) Open() error {
@@ -51,14 +67,6 @@ func (db *DB) Open() error {
 		return fail(err)
 	}
 
-	if db.fileSize != 0 {
-		if err := db.loadMasterPage(); err != nil {
-			return fail(err)
-		}
-	} else {
-		db.flushed = 1
-	}
-
 	// initialise the btree
 	db.tree.fetch = func(ptr uint64) BtreeNode {
 		page := db.getPage(ptr)
@@ -69,6 +77,24 @@ func (db *DB) Open() error {
 	}
 	db.tree.free = func(ptr uint64) {
 		db.freePage(ptr)
+	}
+	db.freeList.page.get = func(u uint64) freeListNode {
+		page := db.getPage(u)
+		return freeListNode{page}
+	}
+	db.freeList.page.allocatae = func(fln freeListNode) uint64 {
+		return db.appendPage(fln.data)
+	}
+	db.freeList.page.write = func(u uint64, fln freeListNode) {
+		db.writePage(u, fln.data)
+	}
+
+	if db.fileSize != 0 {
+		if err := db.loadMasterPage(); err != nil {
+			return fail(err)
+		}
+	} else {
+		db.flushed = 1
 	}
 
 	return nil
@@ -176,7 +202,8 @@ func (db *DB) extendFile(npages int) error {
 	return nil
 }
 
-func (db *DB) extend(npages int) error {
+func (db *DB) extend() error {
+	npages := int(db.flushed) + db.appended.Len()
 	if err := db.extendFile(npages); err != nil {
 		return fmt.Errorf("growing file: %w", err)
 	}
@@ -187,6 +214,17 @@ func (db *DB) extend(npages int) error {
 }
 
 func (db *DB) getPage(ptr uint64) []byte {
+	assert(ptr > 0 && ptr < db.flushed+uint64(db.appended.Len()), "invalid pt: %x", ptr)
+
+	if ptr >= db.flushed {
+		p := db.appended.Get(newPage(ptr, nil))
+		assert(p != nil, "appended cache corrupted")
+		return p.(*page).content
+	}
+	return db.mmapGetPage(ptr)
+}
+
+func (db *DB) mmapGetPage(ptr uint64) []byte {
 	start := uint64(0)
 	for _, mmap := range db.mmaps {
 		end := start + uint64(len(mmap)/PageSize)
@@ -196,19 +234,61 @@ func (db *DB) getPage(ptr uint64) []byte {
 		}
 		start = end
 	}
-	panic("invalid ptr")
+	panic(fmt.Sprintf("invalid ptr: %x", ptr))
+
 }
 
 func (db *DB) allocatePage(page []byte) uint64 {
-	// TODO: reuse deallocated pages
 	assert(len(page) <= PageSize, "page data is larger than PageSize")
-	ptr := db.flushed + uint64(len(db.dirty))
-	db.dirty = append(db.dirty, page)
+	ptr := uint64(0)
+	if db.freeList.freeCount() > 0 {
+		var ok bool
+		ptr, ok = db.freeList.pop()
+		assert(ok, "free list corrupted")
+		db.writePage(ptr, page)
+		db.logger.Debug(fmt.Sprintf("reused page: %x", ptr))
+	} else {
+		ptr = db.appendPage(page)
+		db.logger.Debug(fmt.Sprintf("appended page: %x", ptr))
+	}
 	return ptr
 }
 
-func (db *DB) freePage(ptr uint64) error {
-	return nil
+func (db *DB) freePage(ptr uint64) {
+	assert(ptr > 0 && ptr < db.flushed, "invalid ptr")
+	db.logger.Debug("freeing page", slog.Any("ptr", ptr))
+	db.freeList.Free(ptr)
+}
+
+type page struct {
+	content []byte
+	ptr     uint64
+}
+
+func newPage(ptr uint64, content []byte) *page {
+	return &page{content, ptr}
+}
+
+func (p page) Less(o btree.Item) bool {
+	return p.ptr < o.(*page).ptr
+}
+
+func (db *DB) appendPage(page []byte) uint64 {
+	assert(len(page) <= PageSize, "page data is larger than PageSize")
+	ptr := db.flushed + uint64(db.appended.Len())
+	db.appended.ReplaceOrInsert(newPage(ptr, page))
+	return ptr
+}
+
+func (db *DB) writePage(ptr uint64, page []byte) {
+	assert(len(page) <= PageSize, "page data is larger than PageSize")
+	assert(ptr > 0 && ptr < db.flushed+uint64(db.appended.Len()), "invalid ptr")
+	if ptr < db.flushed {
+		_page := db.getPage(ptr)
+		copy(_page, page)
+	} else {
+		db.appended.ReplaceOrInsert(newPage(ptr, page))
+	}
 }
 
 func (db *DB) loadMasterPage() error {
@@ -216,6 +296,7 @@ func (db *DB) loadMasterPage() error {
 	_sig := data[0:16]
 	root := binary.LittleEndian.Uint64(data[16:])
 	npages := binary.LittleEndian.Uint64(data[24:])
+	freeListHead := binary.LittleEndian.Uint64(data[32:])
 
 	if !bytes.Equal(sig, _sig[:len(sig)]) {
 		return errors.New("invalid signature")
@@ -225,18 +306,22 @@ func (db *DB) loadMasterPage() error {
 	if bad {
 		return errors.New("invalid master page")
 	}
-	db.tree.root = root
 	db.flushed = npages
+	db.tree.root = root
+	db.freeList.read(freeListHead)
 	return nil
 
 }
 
 func (db *DB) writeMasterPage() error {
-	var data [32]byte
+	data := make([]byte, PageSize)
 	copy(data[0:], sig)
 	binary.LittleEndian.PutUint64(data[16:], db.tree.root)
+	fmt.Printf("writing: db.flushed: %d\n", db.flushed)
 	binary.LittleEndian.PutUint64(data[24:], db.flushed)
-	_, err := db.file.WriteAt(data[:], 0)
+	binary.LittleEndian.PutUint64(data[32:], db.freeList.head)
+
+	_, err := db.file.WriteAt(data, 0)
 	if err != nil {
 		return fmt.Errorf("write master page: %w", err)
 	}
@@ -244,28 +329,51 @@ func (db *DB) writeMasterPage() error {
 }
 
 func (db *DB) flushPages() error {
-	npages := int(db.flushed) + len(db.dirty)
-	if err := db.extend(npages); err != nil {
+	db.logger.Debug("flushing pages")
+	db.freeList.write()
+
+	if err := db.extend(); err != nil {
 		return err
 	}
 
-	for i, page := range db.dirty {
-		ptr := db.flushed + uint64(i)
-		copy(db.getPage(ptr), page)
-	}
+	db.appended.Ascend(func(item btree.Item) bool {
+		p := item.(*page)
+		db.logger.Debug("appending page to file", slog.Any("ptr", p.ptr))
+
+		// Get the actual mmap page and copy data to it
+		mmapPage := db.mmapGetPage(p.ptr)
+		copy(mmapPage, p.content)
+		return true
+	})
+
+	// Write the appended pages directly to the mmapped region
+	// for i, page := range {
+	// 	ptr := db.flushed + uint64(i)
+	// 	db.logger.Debug("appending page to file", slog.Any("ptr", ptr))
+	//
+	// 	// Get the actual mmap page and copy data to it
+	// 	mmapPage := db.mmapGetPage(ptr)
+	// 	n := copy(mmapPage, page)
+	// 	assert(n == PageSize, "failed writing to page")
+	//
+	// 	fmt.Printf("ptr %d content: %v\n", ptr, mmapPage[:10])
+	// }
+
 	if err := db.file.Sync(); err != nil {
 		return fmt.Errorf("fsync dirty pages: %w", err)
 	}
-	db.flushed += uint64(len(db.dirty))
-	db.dirty = db.dirty[:0]
+
+	db.flushed += uint64(db.appended.Len())
+	db.appended.Clear(true)
 
 	// write the master page
 	if err := db.writeMasterPage(); err != nil {
 		return fmt.Errorf("write master page: %w", err)
 	}
+
 	if err := db.file.Sync(); err != nil {
 		return fmt.Errorf("fsync master page: %w", err)
 	}
-	return nil
 
+	return nil
 }

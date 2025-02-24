@@ -3,6 +3,7 @@ package deadsimpledb
 import (
 	"bytes"
 	"encoding/binary"
+	"fmt"
 	"os"
 )
 
@@ -44,6 +45,7 @@ func init() {
 	remaining := (PageSize - (BTREE_NODE_HEADER_SIZE + BTREE_POINTER_SIZE + BTREE_OFFSET_SIZE + BTREE_KEY_LEN_SIZE + BTREE_VALUE_LEN_SIZE))
 	BtreeMaxKeySize = remaining / 3
 	BtreeMaxValueSize = remaining - BtreeMaxKeySize
+	freeListCap = (PageSize - freeListHeaderSize) / 8
 }
 
 type Btree struct {
@@ -133,7 +135,7 @@ func treeGet(tree *Btree, node BtreeNode, key []byte) ([]byte, bool) {
 	} else if node.getNodeType() == BTREE_INTERNAL_NODE {
 		return treeGet(tree, tree.fetch(node.getPointer(idx)), key)
 	} else {
-		panic("invalid node type")
+		panic(fmt.Sprintf("invalid node type: %v", node.getNodeType()))
 	}
 
 }
@@ -181,7 +183,7 @@ func treeDelete(tree *Btree, node BtreeNode, key []byte) *BtreeNode {
 		return &new
 
 	} else {
-		panic("invalid node type")
+		panic(fmt.Sprintf("invalid node type: %v", node.getNodeType()))
 	}
 }
 
@@ -213,7 +215,7 @@ func treeInsert(tree *Btree, node BtreeNode, key []byte, val []byte) BtreeNode {
 		nsplit, splited := nodeSplit(child)
 		updateChildren(tree, new, node, idx, idx+1, splited[:nsplit]...)
 	} else {
-		panic("invalid node")
+		panic(fmt.Sprintf("invalid node type: %v", node.getNodeType()))
 	}
 
 	return new
