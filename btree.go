@@ -48,21 +48,153 @@ func init() {
 
 type Btree struct {
 	root uint64
-	// deref dereferences a pointer to a page
-	deref func(uint64) BtreeNode
+	// fetch dereferences a pointer to a page
+	fetch func(uint64) BtreeNode
 	// alloc allocates a new page and returns a pointer to it
 	alloc func(BtreeNode) uint64
-	// dealloc deallocates a page
-	dealloc func(uint64)
+	// free deallocates a page
+	free func(uint64)
 }
 
-func treeInsertNode(tree *Btree, node BtreeNode, key []byte, val []byte) BtreeNode {
-	new := BtreeNode{data: make([]byte, 2*PageSize)}
-	// where to insert the key in the node?
-	idx := node.LoopupLessThanOrEqual(key)
+func (tree *Btree) Get(key []byte) ([]byte, bool) {
+	if len(key) == 0 || len(key) > BtreeMaxKeySize {
+		return nil, false
+	}
+	if tree.root == 0 {
+		return nil, false
+	}
+	return treeGet(tree, tree.fetch(tree.root), key)
+}
 
-	switch node.getNodeType() {
-	case BTREE_LEAF_NODE:
+// The tree will shrink when:
+// 1. The root node is not a leaf
+// 2. The root node has only one child
+func (tree *Btree) Delete(key []byte) bool {
+	assert(len(key) != 0, "key cannot be empty")
+	assert(len(key) <= BtreeMaxKeySize, "key exceeded size limit %d", BtreeMaxKeySize)
+	if tree.root == 0 {
+		return false
+	}
+	newRoot := treeDelete(tree, tree.fetch(tree.root), key)
+	if newRoot == nil {
+		return false
+	}
+	tree.free(tree.root)
+	if newRoot.getNkeys() == BTREE_INTERNAL_NODE && newRoot.getNkeys() == 1 {
+		tree.root = newRoot.getPointer(0)
+	} else {
+		tree.root = tree.alloc(*newRoot)
+	}
+	return true
+}
+
+func (tree *Btree) Insert(key, value []byte) {
+	assert(len(key) != 0, "key cannot be empty")
+	assert(len(key) <= BtreeMaxKeySize, "key exceeded size limit %d", BtreeMaxKeySize)
+	assert(len(value) <= BtreeMaxValueSize, "value exceeded size limit %d", BtreeMaxValueSize)
+
+	if tree.root == 0 {
+		// create the root node
+		root := newBtreeNode()
+		// Insert a empty key as the first key as it is the lowest possible key.
+		// Any new key added will greater than it so making LookupLessThanOrEqual always succeed
+		root.setHeader(BTREE_LEAF_NODE, 2)
+		nodeWriteAt(root, 0, 0, nil, nil)
+		nodeWriteAt(root, 1, 0, key, value)
+		tree.root = tree.alloc(root)
+		return
+	}
+
+	node := tree.fetch(tree.root)
+	tree.free(tree.root)
+
+	node = treeInsert(tree, node, key, value)
+	nsplit, splitted := nodeSplit(node)
+	if nsplit > 1 {
+		root := newBtreeNode()
+		root.setHeader(BTREE_INTERNAL_NODE, nsplit)
+		for i, child := range splitted[:nsplit] {
+			nodeWriteAt(root, uint16(i), tree.alloc(child), child.getKey(0), nil)
+		}
+		tree.root = tree.alloc(root)
+	} else {
+		tree.root = tree.alloc(splitted[0])
+	}
+}
+
+func treeGet(tree *Btree, node BtreeNode, key []byte) ([]byte, bool) {
+	idx := findLessThanOrEqualTo(node, key)
+	if node.getNodeType() == BTREE_LEAF_NODE {
+		if bytes.Equal(key, node.getKey(idx)) {
+			return node.getValue(idx), true
+		} else {
+			return nil, false
+		}
+	} else if node.getNodeType() == BTREE_INTERNAL_NODE {
+		return treeGet(tree, tree.fetch(node.getPointer(idx)), key)
+	} else {
+		panic("invalid node type")
+	}
+
+}
+
+// treeDelete deletes the key-value pair from the subtree rooted at the node.
+// It returns the new node after the deletion. If no value was deleted it returns nil.
+// It is the caller's responsibility to free the old node and merge the node if it is too small.
+func treeDelete(tree *Btree, node BtreeNode, key []byte) *BtreeNode {
+	idx := findLessThanOrEqualTo(node, key)
+	// base case: when the leaf node is reached delete the key-value pair
+	if node.getNodeType() == BTREE_LEAF_NODE {
+		// if the key is not found return nil
+		if !bytes.Equal(key, node.getKey(idx)) {
+			return nil
+		}
+		new := BtreeNode{data: make([]byte, PageSize)}
+		leafDeleteKV(new, node, idx)
+		return &new
+	} else if node.getNodeType() == BTREE_INTERNAL_NODE {
+		childPtr := node.getPointer(idx)
+		child := tree.fetch(childPtr)
+		newChild := treeDelete(tree, child, key)
+		if newChild == nil {
+			return nil
+		}
+		tree.free(childPtr)
+
+		new := newBtreeNode()
+
+		mergeDir, sibling := shouldMerge(tree, node, idx, *newChild)
+		if mergeDir == mergeNone {
+			updateChildren(tree, new, node, idx, idx+1, *newChild)
+			return &new
+		}
+		merged := BtreeNode{data: make([]byte, PageSize)}
+		mergeNode(merged, *sibling, *newChild)
+		if mergeDir == mergeLeft {
+			tree.free(node.getPointer(idx - 1))
+			// replace the left sibling and the child pointer with the merged node
+			updateChildren(tree, new, node, idx-1, idx+1, merged)
+		} else {
+			tree.free(node.getPointer(idx + 1))
+			updateChildren(tree, new, node, idx, idx+2, merged)
+		}
+		return &new
+
+	} else {
+		panic("invalid node type")
+	}
+}
+
+// treeInsert inserts a key-value pair into the subtree rooted at the node.
+// It returns the new node after the insertion, the node is not guaranteed to fit in a page.
+// It is the caller's responsibility to free the old node and split the node if it is too large.
+func treeInsert(tree *Btree, node BtreeNode, key []byte, val []byte) BtreeNode {
+	new := newBtreeNodeWithPageSize(2)
+	// get the index at which the key must be inserted with respect to the ordering.
+	idx := findLessThanOrEqualTo(node, key)
+
+	if node.getNodeType() == BTREE_LEAF_NODE {
+		// base case: when the leaf node is reached insert the key-value pair
 		if bytes.Equal(key, node.getKey(idx)) {
 			// if the key is equal to the existing key overwrite it
 			leafUpdateKV(new, node, idx, key, val)
@@ -70,30 +202,26 @@ func treeInsertNode(tree *Btree, node BtreeNode, key []byte, val []byte) BtreeNo
 			// the key found is less than the key to insert
 			// insert the key after the key found
 			leafInsertKV(new, node, idx+1, key, val)
-
 		}
-	case BTREE_INTERNAL_NODE:
-		internalNodeInsert(tree, new, node, idx, key, val)
-	default:
+	} else if node.getNodeType() == BTREE_INTERNAL_NODE {
+		// resursively insert the key-value pair into the child node
+		childPtr := node.getPointer(idx)
+		child := tree.fetch(childPtr)
+		child = treeInsert(tree, child, key, val)
+		tree.free(childPtr)
+		// split the child node if it is too large
+		nsplit, splited := nodeSplit(child)
+		updateChildren(tree, new, node, idx, idx+1, splited[:nsplit]...)
+	} else {
 		panic("invalid node")
 	}
+
 	return new
 }
 
-func internalNodeInsert(tree *Btree, new, node BtreeNode, idx uint16, key, val []byte) {
-	childPtr := node.getPointer(idx)
-	child := tree.deref(childPtr)
-	// TODO: why deallocate the child node here?
-	tree.dealloc(childPtr)
-
-	// recursively insert the key-value pair into the child node
-	child = treeInsertNode(tree, child, key, val)
-
-	nsplit, splited := nodeSplit(child)
-
-	nodeReplaceOneWithMany(tree, new, node, idx, splited[:nsplit]...)
-}
-
+// nodeSplit splits the node into two or three nodes so that they all fit in a page
+// while preserving the order of the key-value pairs.
+// It returns the number splits and the split nodes.
 func nodeSplit(node BtreeNode) (uint16, [3]BtreeNode) {
 	// if the node fits in a page return the node truncate the overly allocated slice.
 	if node.Size() <= uint16(PageSize) {
@@ -125,7 +253,7 @@ func nodeSplit(node BtreeNode) (uint16, [3]BtreeNode) {
 // This is due to the segmentation and fixed order constraint of the key-value pairs.
 // For exmaple, if the node has 3 key-value pairs where the first and third key-value pair size is about 1/3 of the maximum key-value pair size
 // and the second key-value pair size is the maximum key-value pair size.
-// There is no way to split the node into two equal nodes without rearranging the key-value pairs.
+// There is no way to split the node into two nodes that fit in the page size without rearranging the key-value pairs.
 //
 // nodeLeftRightSplit expects the left node have been allocated as much space as the original node,
 // if this is not the case the function will panic.
@@ -133,12 +261,12 @@ func nodeLeftRightSplit(left, right, node BtreeNode) {
 	rightSize := uint16(BTREE_NODE_HEADER_SIZE)
 	var rightIdx uint16
 
-	for i := node.getNkeys() - 1; i > 0; i-- {
+	for i := node.getNkeys() - 1; i >= 0; i-- {
 		kvPos := node.getKvPos(i)
 		extra := BTREE_POINTER_SIZE + BTREE_OFFSET_SIZE + BTREE_KEY_LEN_SIZE + BTREE_VALUE_LEN_SIZE +
 			binary.LittleEndian.Uint16(node.data[kvPos:]) + binary.LittleEndian.Uint16(node.data[kvPos+BTREE_KEY_LEN_SIZE:])
 		if rightSize+extra > uint16(PageSize) {
-			rightIdx = i
+			rightIdx = i + 1
 			break
 		}
 		rightSize += extra
@@ -150,15 +278,86 @@ func nodeLeftRightSplit(left, right, node BtreeNode) {
 	nodeCopyN(left, node, 0, 0, rightIdx)
 }
 
-func nodeReplaceOneWithMany(tree *Btree, new, old BtreeNode, idx uint16, childrens ...BtreeNode) {
+// updateChildren allocates the new children nodes and overwrites the old children pointers
+// between [start, end) with the new children pointers. If end - start < len(children) the remaining
+// children pointers are shifted to the right to make room for the new children pointers.
+func updateChildren(tree *Btree, new, old BtreeNode, start, end uint16, children ...BtreeNode) {
 	assert(old.getNodeType() == BTREE_INTERNAL_NODE, "old is not an internal node")
-	delta := uint16(len(childrens))
-	new.setHeader(old.getNodeType(), old.getNkeys()+delta-1)
-	nodeCopyN(new, old, 0, 0, idx)
-	for i, child := range childrens {
-		nodeWriteAt(new, idx+uint16(i), tree.alloc(child), child.getKey(0), nil)
+	assert(start < end, "start should be less than end")
+	assert(end <= old.getNkeys(), "end should be less than or equal to the number of keys in the node")
+	newNKeys := old.getNkeys() - (end - start) + uint16(len(children))
+	new.setHeader(BTREE_INTERNAL_NODE, newNKeys)
+	nodeCopyN(new, old, 0, 0, start)
+	for i, child := range children {
+		nodeWriteAt(new, start+uint16(i), tree.alloc(child), child.getKey(0), nil)
 	}
-	nodeCopyN(new, old, idx+delta, idx+1, old.getNkeys()-(idx+1))
+	nodeCopyN(new, old, start+uint16(len(children)), end, old.getNkeys()-end)
+}
+
+// mergeNode merges the left and right node into the merged node.
+// Where the left node is copied to the merged node at the start and the right node is copied to the merged node after the left node.
+func mergeNode(merged, left, right BtreeNode) {
+	assert(left.getNodeType() == right.getNodeType(), "left and right node type mismatch")
+	merged.setHeader(left.getNodeType(), left.getNkeys()+right.getNkeys())
+	nodeCopyN(merged, left, 0, 0, left.getNkeys())
+	nodeCopyN(merged, right, left.getNkeys(), 0, right.getNkeys())
+}
+
+type mergeOption uint8
+
+const (
+	mergeLeft mergeOption = iota
+	mergeRight
+	mergeNone
+)
+
+// shouldMerge determines if the node should be merged with its sibling.
+// Conditions for merging are:
+// 1. The node is smaller than 1/4 page.
+// 2. The node has a sibling that when merged will fit in a page.
+func shouldMerge(tree *Btree, parent BtreeNode, idx uint16, child BtreeNode) (mergeOption, *BtreeNode) {
+	if child.Size() >= uint16(PageSize)/4 {
+		return mergeNone, nil
+	}
+	if idx > 0 {
+		sibling := tree.fetch(parent.getPointer(idx - 1))
+		mergedSize := sibling.Size() + child.Size() - BTREE_NODE_HEADER_SIZE
+		if mergedSize <= uint16(PageSize) {
+			return mergeLeft, &sibling
+		}
+
+	}
+	if idx+1 < parent.getNkeys() {
+		sibling := tree.fetch(parent.getPointer(idx + 1))
+		mergedSize := sibling.Size() + child.Size() - BTREE_NODE_HEADER_SIZE
+		if mergedSize <= uint16(PageSize) {
+			return mergeRight, &sibling
+		}
+	}
+
+	return mergeNone, nil
+}
+
+// findLessThanOrEqualTo searches for the largest key within the node that is less than or equal to the
+// key and return its index.
+//
+// The first key is always going to be less than or equals to the key as it is copied from the parent node.
+// So it is going to be returned if no other key matches the condition.
+func findLessThanOrEqualTo(n BtreeNode, key []byte) uint16 {
+	nkeys := n.getNkeys()
+	// The most recent key that is less than or equals to the key
+	idx := uint16(0)
+
+	for i := uint16(1); i < nkeys; i++ {
+		if cmp := bytes.Compare(n.getKey(i), key); cmp <= 0 {
+			idx = i
+		} else if cmp >= 0 {
+			// encountered a key that is greater than the key
+			break
+		}
+
+	}
+	return idx
 }
 
 // leafInsertKV write a key value pair at i-th by shift the surrounding key-value pairs to make room for the new key-value pair.
@@ -174,8 +373,17 @@ func leafInsertKV(new, old BtreeNode, idx uint16, key, value []byte) {
 // leafUpdateKV  write a key-value pair at i-th by overwriting the existing key-value pair.
 func leafUpdateKV(new, old BtreeNode, idx uint16, key, value []byte) {
 	assert(old.getNodeType() == BTREE_LEAF_NODE, "old node is not a leaf node")
-	new.setHeader(BTREE_LEAF_NODE, old.getNkeys()+1)
+	new.setHeader(BTREE_LEAF_NODE, old.getNkeys())
 	nodeCopyN(new, old, 0, 0, idx)
 	nodeWriteAt(new, idx, 0, key, value)
 	nodeCopyN(new, old, idx+1, idx+1, old.getNkeys()-idx-1)
+}
+
+// leafDeleteKV delete the i-th key-value pair.
+func leafDeleteKV(new, old BtreeNode, idx uint16) {
+	assert(old.getNodeType() == BTREE_LEAF_NODE, "old is not a leaf node")
+	new.setHeader(old.getNodeType(), old.getNkeys()-1)
+	nodeCopyN(new, old, 0, 0, idx)
+	nodeCopyN(new, old, idx, idx+1, old.getNkeys()-(idx+1))
+
 }

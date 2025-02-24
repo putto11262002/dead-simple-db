@@ -1,12 +1,21 @@
 package deadsimpledb
 
 import (
-	"bytes"
 	"encoding/binary"
 )
 
 type BtreeNode struct {
 	data []byte
+}
+
+// newBtreeNode creates a new BtreeNode a one page size.
+func newBtreeNode() BtreeNode {
+	return BtreeNode{make([]byte, PageSize)}
+}
+
+// newBtreeNodeWithPageSize creates a new BtreeNode with the given page size.
+func newBtreeNodeWithPageSize(n int) BtreeNode {
+	return BtreeNode{make([]byte, PageSize*n)}
 }
 
 func (n BtreeNode) getNodeType() uint16 {
@@ -103,28 +112,6 @@ func (n *BtreeNode) shrinkToFit() {
 	n.data = n.data[:n.Size()]
 }
 
-// LoopupLessThanOrEqual searches for the largest key within the node that is less than or equal to the
-// key and return its index.
-//
-// The first key is always going to be less than or equals to the key as it is copied from the parent node.
-// So it is going to be returned if no other key matches the condition.
-func (n BtreeNode) LoopupLessThanOrEqual(key []byte) uint16 {
-	nkeys := n.getNkeys()
-	// The most recent key that is less than or equals to the key
-	idx := uint16(0)
-
-	for i := uint16(1); i < nkeys; i++ {
-		if cmp := bytes.Compare(n.getKey(i), key); cmp <= 0 {
-			idx = i
-		} else if cmp >= 0 {
-			// encountered a key that is greater than the key
-			break
-		}
-
-	}
-	return idx
-}
-
 // nodeCopyN copys pointers, offsets, key-value pairs at [destIdx, destIdx+n) from dest to src at [srcIdx, srcIdx+n).
 func nodeCopyN(dest, src BtreeNode, destIdx, srcIdx uint16, n uint16) {
 	assert(destIdx+n <= dest.getNkeys(), "dest: index out of bound")
@@ -152,13 +139,14 @@ func nodeCopyN(dest, src BtreeNode, destIdx, srcIdx uint16, n uint16) {
 	copy(dest.data[dest.getKvPos(destIdx):], src.data[srcStart:srcEnd])
 }
 
-// nodeWriteAt writes pointer, key, and value to idx index. It only updates the offset for the idx + 1
-func nodeWriteAt(node BtreeNode, idx uint16, ptr uint64, key, value []byte) {
-	node.setPointer(idx, ptr)
+// nodeWriteAt writes pointer, key, and value to i-th index and updates the i+1-th offset.
+// It is the caller's responsibility to ensure the remaining offsets beyond i+1 are updated.
+func nodeWriteAt(node BtreeNode, i uint16, ptr uint64, key, value []byte) {
+	node.setPointer(i, ptr)
 
 	keyLen := uint16(len(key))
 	valueLen := uint16(len(value))
-	pos := node.getKvPos(idx)
+	pos := node.getKvPos(i)
 
 	binary.LittleEndian.PutUint16(node.data[pos:], keyLen)
 	binary.LittleEndian.PutUint16(node.data[pos+BTREE_KEY_LEN_SIZE:], valueLen)
@@ -166,6 +154,6 @@ func nodeWriteAt(node BtreeNode, idx uint16, ptr uint64, key, value []byte) {
 	copy(node.data[kvDataStart:], key)
 	copy(node.data[kvDataStart+keyLen:], value)
 
-	newOffset := node.getOffset(idx) + BTREE_KEY_LEN_SIZE + BTREE_VALUE_LEN_SIZE + keyLen + valueLen
-	node.setOffset(idx+1, newOffset)
+	newOffset := node.getOffset(i) + BTREE_KEY_LEN_SIZE + BTREE_VALUE_LEN_SIZE + keyLen + valueLen
+	node.setOffset(i+1, newOffset)
 }

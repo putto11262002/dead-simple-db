@@ -250,3 +250,11 @@ func Test_getValue(t *testing.T) {
 	testAssert.Equal(t, values[0], node.getValue(0))
 	testAssert.Equal(t, values[1], node.getValue(1))
 }
+
+func Test_size(t *testing.T) {
+	t.Run("unintialized node", func(t *testing.T) {
+		node := BtreeNode{}
+		size := node.Size()
+		testAssert.Equal(t, uint16(0), size)
+	})
+}
