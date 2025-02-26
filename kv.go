@@ -16,7 +16,7 @@ var (
 	sig = []byte("deadsimpledb")
 )
 
-type DB struct {
+type KV struct {
 	// flushed is the number of pages that are flushed to disk
 	flushed uint64
 	// nfree is the number of pages token from the free list
@@ -36,12 +36,11 @@ type DB struct {
 	appended *btree.BTree
 
 	freeList *freeList
-	pageIO   PageIO
 	logger   *slog.Logger
 }
 
-func NewDB(path string) *DB {
-	return &DB{
+func NewKV(path string) *KV {
+	return &KV{
 		path:     path,
 		tree:     &Btree{},
 		freeList: newFreeList(),
@@ -51,7 +50,7 @@ func NewDB(path string) *DB {
 
 }
 
-func (db *DB) Open() error {
+func (db *KV) Open() error {
 	fail := func(err error) error {
 		db.Close()
 		return err
@@ -101,7 +100,7 @@ func (db *DB) Open() error {
 
 }
 
-func (db *DB) Close() error {
+func (db *KV) Close() error {
 	for _, mmap := range db.mmaps {
 		err := syscall.Munmap(mmap)
 		if err != nil {
@@ -111,16 +110,16 @@ func (db *DB) Close() error {
 	return db.file.Close()
 }
 
-func (db *DB) Get(key []byte) ([]byte, bool) {
+func (db *KV) Get(key []byte) ([]byte, bool) {
 	return db.tree.Get(key)
 }
 
-func (db *DB) Set(key, value []byte) error {
+func (db *KV) Set(key, value []byte) error {
 	db.tree.Insert(key, value)
 	return db.flushPages()
 }
 
-func (db *DB) Del(key []byte) (bool, error) {
+func (db *KV) Del(key []byte) (bool, error) {
 	ok := db.tree.Delete(key)
 	if !ok {
 		return false, nil
@@ -128,7 +127,7 @@ func (db *DB) Del(key []byte) (bool, error) {
 	return ok, db.flushPages()
 }
 
-func (db *DB) initMmap() error {
+func (db *KV) initMmap() error {
 	fStat, err := os.Stat(db.file.Name())
 	if err != nil {
 		return fmt.Errorf("os.Stat: %w", err)
@@ -162,7 +161,7 @@ func (db *DB) initMmap() error {
 
 }
 
-func (db *DB) extendMmap(npages int) error {
+func (db *KV) extendMmap(npages int) error {
 	if db.mmapSize >= npages*PageSize {
 		return nil
 	}
@@ -181,7 +180,7 @@ func (db *DB) extendMmap(npages int) error {
 	return nil
 }
 
-func (db *DB) extendFile(npages int) error {
+func (db *KV) extendFile(npages int) error {
 	fPages := db.fileSize / PageSize
 	if fPages >= npages {
 		return nil
@@ -202,7 +201,7 @@ func (db *DB) extendFile(npages int) error {
 	return nil
 }
 
-func (db *DB) extend() error {
+func (db *KV) extend() error {
 	npages := int(db.flushed) + db.appended.Len()
 	if err := db.extendFile(npages); err != nil {
 		return fmt.Errorf("growing file: %w", err)
@@ -213,7 +212,7 @@ func (db *DB) extend() error {
 	return nil
 }
 
-func (db *DB) getPage(ptr uint64) []byte {
+func (db *KV) getPage(ptr uint64) []byte {
 	assert(ptr > 0 && ptr < db.flushed+uint64(db.appended.Len()), "invalid pt: %x", ptr)
 
 	if ptr >= db.flushed {
@@ -224,7 +223,7 @@ func (db *DB) getPage(ptr uint64) []byte {
 	return db.mmapGetPage(ptr)
 }
 
-func (db *DB) mmapGetPage(ptr uint64) []byte {
+func (db *KV) mmapGetPage(ptr uint64) []byte {
 	start := uint64(0)
 	for _, mmap := range db.mmaps {
 		end := start + uint64(len(mmap)/PageSize)
@@ -238,7 +237,7 @@ func (db *DB) mmapGetPage(ptr uint64) []byte {
 
 }
 
-func (db *DB) allocatePage(page []byte) uint64 {
+func (db *KV) allocatePage(page []byte) uint64 {
 	assert(len(page) <= PageSize, "page data is larger than PageSize")
 	ptr := uint64(0)
 	if db.freeList.freeCount() > 0 {
@@ -254,7 +253,7 @@ func (db *DB) allocatePage(page []byte) uint64 {
 	return ptr
 }
 
-func (db *DB) freePage(ptr uint64) {
+func (db *KV) freePage(ptr uint64) {
 	assert(ptr > 0 && ptr < db.flushed, "invalid ptr")
 	db.logger.Debug("freeing page", slog.Any("ptr", ptr))
 	db.freeList.Free(ptr)
@@ -273,14 +272,14 @@ func (p page) Less(o btree.Item) bool {
 	return p.ptr < o.(*page).ptr
 }
 
-func (db *DB) appendPage(page []byte) uint64 {
+func (db *KV) appendPage(page []byte) uint64 {
 	assert(len(page) <= PageSize, "page data is larger than PageSize")
 	ptr := db.flushed + uint64(db.appended.Len())
 	db.appended.ReplaceOrInsert(newPage(ptr, page))
 	return ptr
 }
 
-func (db *DB) writePage(ptr uint64, page []byte) {
+func (db *KV) writePage(ptr uint64, page []byte) {
 	assert(len(page) <= PageSize, "page data is larger than PageSize")
 	assert(ptr > 0 && ptr < db.flushed+uint64(db.appended.Len()), "invalid ptr")
 	if ptr < db.flushed {
@@ -291,7 +290,7 @@ func (db *DB) writePage(ptr uint64, page []byte) {
 	}
 }
 
-func (db *DB) loadMasterPage() error {
+func (db *KV) loadMasterPage() error {
 	data := db.mmaps[0]
 	_sig := data[0:16]
 	root := binary.LittleEndian.Uint64(data[16:])
@@ -313,7 +312,7 @@ func (db *DB) loadMasterPage() error {
 
 }
 
-func (db *DB) writeMasterPage() error {
+func (db *KV) writeMasterPage() error {
 	data := make([]byte, PageSize)
 	copy(data[0:], sig)
 	binary.LittleEndian.PutUint64(data[16:], db.tree.root)
@@ -328,7 +327,7 @@ func (db *DB) writeMasterPage() error {
 	return nil
 }
 
-func (db *DB) flushPages() error {
+func (db *KV) flushPages() error {
 	db.logger.Debug("flushing pages")
 	db.freeList.write()
 
