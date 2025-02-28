@@ -75,7 +75,6 @@ type freeList struct {
 	popn    int
 	cache   map[uint64]bool
 	size    int
-	pageIO  PageIO
 
 	// callbacks for managing on disk pages
 	page struct {

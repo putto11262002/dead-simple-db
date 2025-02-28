@@ -13,8 +13,12 @@ import (
 )
 
 var (
-	sig = []byte("deadsimpledb")
+	sig = []byte("dead simple db \000")
 )
+
+func init() {
+	assert(len(sig) == 16, "invalid signature length")
+}
 
 type KV struct {
 	// flushed is the number of pages that are flushed to disk
@@ -117,6 +121,21 @@ func (db *KV) Get(key []byte) ([]byte, bool) {
 func (db *KV) Set(key, value []byte) error {
 	db.tree.Insert(key, value)
 	return db.flushPages()
+}
+
+func (kv *KV) Update(key []byte, val []byte, mode InsertMode) (bool, error) {
+	res := kv.tree.InsertEx(key, val, mode)
+	var ok bool
+	if mode == Insert {
+		ok = res.Inserted
+	}
+	if mode == Update {
+		ok = res.Updated
+	}
+	if mode == Upsert {
+		ok = res.Inserted || res.Updated
+	}
+	return ok, kv.flushPages()
 }
 
 func (db *KV) Del(key []byte) (bool, error) {
@@ -316,7 +335,6 @@ func (db *KV) writeMasterPage() error {
 	data := make([]byte, PageSize)
 	copy(data[0:], sig)
 	binary.LittleEndian.PutUint64(data[16:], db.tree.root)
-	fmt.Printf("writing: db.flushed: %d\n", db.flushed)
 	binary.LittleEndian.PutUint64(data[24:], db.flushed)
 	binary.LittleEndian.PutUint64(data[32:], db.freeList.head)
 

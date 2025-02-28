@@ -90,6 +90,57 @@ func (tree *Btree) Delete(key []byte) bool {
 	return true
 }
 
+type InsertMode uint8
+
+const (
+	Insert = iota
+	Upsert
+	Update
+)
+
+type InsertResult struct {
+	Inserted bool
+	Updated  bool
+}
+
+func (tree *Btree) InsertEx(key, value []byte, mode InsertMode) InsertResult {
+	assert(len(key) != 0, "key cannot be empty")
+	assert(len(key) <= BtreeMaxKeySize, "key exceeded size limit %d", BtreeMaxKeySize)
+	assert(len(value) <= BtreeMaxValueSize, "value exceeded size limit %d", BtreeMaxValueSize)
+
+	if tree.root == 0 {
+		if mode == Update {
+			return InsertResult{Inserted: false, Updated: false}
+		}
+		root := newBtreeNode()
+		root.setHeader(BTREE_LEAF_NODE, 2)
+		nodeWriteAt(root, 0, 0, nil, nil)
+		nodeWriteAt(root, 1, 0, key, value)
+		tree.root = tree.alloc(root)
+		return InsertResult{Inserted: true, Updated: false}
+	}
+
+	root := tree.fetch(tree.root)
+
+	newRoot, insertRes := tree.insertEx(root, key, value, mode)
+	if newRoot == nil {
+		return insertRes
+	}
+	tree.free(tree.root)
+	nsplit, splitted := nodeSplit(*newRoot)
+	if nsplit > 1 {
+		root := newBtreeNode()
+		root.setHeader(BTREE_INTERNAL_NODE, nsplit)
+		for i, child := range splitted[:nsplit] {
+			nodeWriteAt(root, uint16(i), tree.alloc(child), child.getKey(0), nil)
+		}
+		tree.root = tree.alloc(root)
+	} else {
+		tree.root = tree.alloc(splitted[0])
+	}
+	return insertRes
+}
+
 func (tree *Btree) Insert(key, value []byte) {
 	assert(len(key) != 0, "key cannot be empty")
 	assert(len(key) <= BtreeMaxKeySize, "key exceeded size limit %d", BtreeMaxKeySize)
@@ -122,6 +173,51 @@ func (tree *Btree) Insert(key, value []byte) {
 	} else {
 		tree.root = tree.alloc(splitted[0])
 	}
+}
+
+// insertEx is an extension to treeInsert. It added support for different insert modes.
+// It returns the new node if a value is inserted or updated, otherwise it returns nil.
+// It is the caller's responsibility to free the old node and split the node if it is too large.
+func (tree *Btree) insertEx(node BtreeNode, key []byte, val []byte, mode InsertMode) (*BtreeNode, InsertResult) {
+	new := newBtreeNodeWithPageSize(2)
+	// get the index at which the key must be inserted with respect to the ordering.
+	idx := findLessThanOrEqualTo(node, key)
+
+	if node.getNodeType() == BTREE_LEAF_NODE {
+		// base case: when the leaf node is reached insert the key-value pair
+		if bytes.Equal(key, node.getKey(idx)) {
+			if mode == Insert {
+				return nil, InsertResult{Inserted: false, Updated: false}
+			}
+			// if the key is equal to the existing key overwrite it
+			leafUpdateKV(new, node, idx, key, val)
+			return &new, InsertResult{Inserted: false, Updated: true}
+		} else {
+			if mode == Update {
+				return nil, InsertResult{Inserted: false, Updated: false}
+			}
+			// the key found is less than the key to insert
+			// insert the key after the key found
+			leafInsertKV(new, node, idx+1, key, val)
+			return &new, InsertResult{Inserted: true, Updated: false}
+		}
+	} else if node.getNodeType() == BTREE_INTERNAL_NODE {
+		// resursively insert the key-value pair into the child node
+		childPtr := node.getPointer(idx)
+		child := tree.fetch(childPtr)
+		newChild, res := tree.insertEx(child, key, val, mode)
+		if newChild == nil {
+			return nil, res
+		}
+		tree.free(childPtr)
+		// split the child node if it is too large
+		nsplit, splited := nodeSplit(*newChild)
+		updateChildren(tree, new, node, idx, idx+1, splited[:nsplit]...)
+		return &new, res
+	} else {
+		panic(fmt.Sprintf("invalid node type: %v", node.getNodeType()))
+	}
+
 }
 
 func treeGet(tree *Btree, node BtreeNode, key []byte) ([]byte, bool) {
