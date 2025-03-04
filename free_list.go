@@ -6,8 +6,8 @@ import (
 )
 
 var (
-	freeListNodeType       = 3
-	freeListHeaderSize int = 2 + 2 + 8 + 8
+	freeListNodeType   uint16 = 3
+	freeListHeaderSize int    = 2 + 2 + 8 + 8
 	// freeListCap is the maximum number of pointers a free list node can store.
 	freeListCap int
 )
@@ -76,17 +76,13 @@ type freeList struct {
 	cache   map[uint64]bool
 	size    int
 
-	// callbacks for managing on disk pages
-	page struct {
-		get       func(uint64) freeListNode
-		allocatae func(freeListNode) uint64
-		write     func(uint64, freeListNode)
-	}
+	pager Pager
 }
 
-func newFreeList() *freeList {
+func newFreeList(pager Pager) *freeList {
 	return &freeList{
 		cache: make(map[uint64]bool),
+		pager: pager,
 	}
 }
 
@@ -110,7 +106,7 @@ func (fl *freeList) pop() (uint64, bool) {
 	return ptr, true
 }
 
-func (fl *freeList) Free(ptr uint64) {
+func (fl *freeList) free(ptr uint64) {
 	if freed := fl.cache[ptr]; freed {
 		panic(fmt.Sprintf("double free: %d", ptr))
 	}
@@ -130,7 +126,7 @@ func (fl *freeList) read(head uint64) {
 		return
 	}
 	fl.head = head
-	headNode := fl.page.get(head)
+	headNode := fl.pager.load(head).asFreeList()
 	fl.size = int(headNode.getTotal())
 	fl.freed = make([]uint64, fl.size)
 	fl.cache = make(map[uint64]bool)
@@ -138,16 +134,18 @@ func (fl *freeList) read(head uint64) {
 
 	freed := fl.freed
 
+	cursor := head
+
 	// travese the linked list nodes to read to entire free list
-	for head != 0 {
-		node := fl.page.get(head)
+	for cursor != 0 {
+		node := fl.pager.load(cursor).asFreeList()
 		for i := 0; i < node.size(); i++ {
-			ptr := node.getPtr(headNode.size() - i - 1)
+			ptr := node.getPtr(node.size() - i - 1)
 			freed[len(freed)-1] = ptr
 			freed = freed[:len(freed)-1]
 			fl.cache[ptr] = true
 		}
-		head = headNode.next()
+		cursor = node.next()
 	}
 	assert(len(freed) == 0, "free list is corrupted")
 }
@@ -167,8 +165,8 @@ func (fl *freeList) write() {
 	remaining := []uint64{}
 	for fl.popn > 0 {
 		assert(fl.head != 0, "free list is corrupted")
-		node := fl.page.get(fl.head)
-		fl.Free(fl.head)
+		node := fl.pager.load(fl.head).asFreeList()
+		fl.free(fl.head)
 
 		if fl.popn >= node.size() {
 			fl.popn -= node.size()
@@ -191,8 +189,8 @@ func (fl *freeList) write() {
 		if len(remaining) == 0 {
 			assert(fl.head != 0, "free list is corrupted")
 
-			node := fl.page.get(fl.head)
-			fl.Free(fl.head)
+			node := fl.pager.load(fl.head).asFreeList()
+			fl.free(fl.head)
 			for i := 0; i < node.size(); i++ {
 				remaining = append(remaining, node.getPtr(i))
 			}
@@ -215,7 +213,7 @@ func (fl *freeList) write() {
 	fl.freed = append(fl.freed, fl.pending...)
 	fl.pending = fl.pending[:0]
 
-	fl.page.get(fl.head).setTotal(uint64(fl.size))
+	fl.pager.load(fl.head).asFreeList().setTotal(uint64(fl.size))
 }
 
 func (fl *freeList) writePtrs(ptrs []uint64, reuse []uint64) []uint64 {
@@ -235,9 +233,9 @@ func (fl *freeList) writePtrs(ptrs []uint64, reuse []uint64) []uint64 {
 		if len(reuse) > 0 {
 			fl.head = reuse[0]
 			reuse = reuse[1:]
-			fl.page.write(fl.head, *new)
+			fl.pager.write(Page{ptr: fl.head, inner: new.data})
 		} else {
-			fl.head = fl.page.allocatae(*new)
+			fl.head = fl.pager.allocate(Page{inner: new.data})
 		}
 		fl.size += size
 

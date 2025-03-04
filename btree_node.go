@@ -18,6 +18,13 @@ func newBtreeNodeWithPageSize(n int) BtreeNode {
 	return BtreeNode{make([]byte, PageSize*n)}
 }
 
+func (n BtreeNode) asPage() Page {
+	assert(len(n.data) <= PageSize, "node overflows page size")
+	return Page{
+		inner: n.data,
+	}
+}
+
 func (n BtreeNode) getNodeType() uint16 {
 	return binary.LittleEndian.Uint16(n.data[:2])
 }

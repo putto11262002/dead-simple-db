@@ -11,6 +11,15 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func makeData(prefix string, size int) []byte {
+	data := make([]byte, size)
+	copy(data, []byte(prefix))
+	// Fill the rest with incrementing values for uniqueness
+	for i := len(prefix); i < size; i++ {
+		data[i] = byte(i % 256)
+	}
+	return data
+}
 func TestKV(t *testing.T) {
 	// Create a temporary directory for test files
 	testDir, err := os.MkdirTemp("", "kv-test-")
@@ -26,15 +35,6 @@ func TestKV(t *testing.T) {
 	}
 
 	// Helper to create keys and values of specific sizes
-	makeData := func(prefix string, size int) []byte {
-		data := make([]byte, size)
-		copy(data, []byte(prefix))
-		// Fill the rest with incrementing values for uniqueness
-		for i := len(prefix); i < size; i++ {
-			data[i] = byte(i % 256)
-		}
-		return data
-	}
 
 	// Create test data with three size categories
 	testCases := []struct {

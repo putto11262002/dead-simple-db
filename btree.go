@@ -49,13 +49,12 @@ func init() {
 }
 
 type Btree struct {
-	root uint64
-	// fetch dereferences a pointer to a page
-	fetch func(uint64) BtreeNode
-	// alloc allocates a new page and returns a pointer to it
-	alloc func(BtreeNode) uint64
-	// free deallocates a page
-	free func(uint64)
+	root  uint64
+	pager Pager
+}
+
+func newBtree(root uint64, pager Pager) *Btree {
+	return &Btree{pager: pager, root: root}
 }
 
 func (tree *Btree) Get(key []byte) ([]byte, bool) {
@@ -65,7 +64,9 @@ func (tree *Btree) Get(key []byte) ([]byte, bool) {
 	if tree.root == 0 {
 		return nil, false
 	}
-	return treeGet(tree, tree.fetch(tree.root), key)
+	root := tree.pager.load(tree.root).asBtreeNode()
+
+	return treeGet(tree, root, key)
 }
 
 // The tree will shrink when:
@@ -77,15 +78,15 @@ func (tree *Btree) Delete(key []byte) bool {
 	if tree.root == 0 {
 		return false
 	}
-	newRoot := treeDelete(tree, tree.fetch(tree.root), key)
+	newRoot := treeDelete(tree, tree.pager.load(tree.root).asBtreeNode(), key)
 	if newRoot == nil {
 		return false
 	}
-	tree.free(tree.root)
+	tree.pager.free(tree.root)
 	if newRoot.getNkeys() == BTREE_INTERNAL_NODE && newRoot.getNkeys() == 1 {
 		tree.root = newRoot.getPointer(0)
 	} else {
-		tree.root = tree.alloc(*newRoot)
+		tree.root = tree.pager.allocate(newRoot.asPage())
 	}
 	return true
 }
@@ -116,27 +117,27 @@ func (tree *Btree) InsertEx(key, value []byte, mode InsertMode) InsertResult {
 		root.setHeader(BTREE_LEAF_NODE, 2)
 		nodeWriteAt(root, 0, 0, nil, nil)
 		nodeWriteAt(root, 1, 0, key, value)
-		tree.root = tree.alloc(root)
+		tree.root = tree.pager.allocate(root.asPage())
 		return InsertResult{Inserted: true, Updated: false}
 	}
 
-	root := tree.fetch(tree.root)
+	root := tree.pager.load(tree.root).asBtreeNode()
 
 	newRoot, insertRes := tree.insertEx(root, key, value, mode)
 	if newRoot == nil {
 		return insertRes
 	}
-	tree.free(tree.root)
+	tree.pager.free(tree.root)
 	nsplit, splitted := nodeSplit(*newRoot)
 	if nsplit > 1 {
 		root := newBtreeNode()
 		root.setHeader(BTREE_INTERNAL_NODE, nsplit)
 		for i, child := range splitted[:nsplit] {
-			nodeWriteAt(root, uint16(i), tree.alloc(child), child.getKey(0), nil)
+			nodeWriteAt(root, uint16(i), tree.pager.allocate(child.asPage()), child.getKey(0), nil)
 		}
-		tree.root = tree.alloc(root)
+		tree.root = tree.pager.allocate(root.asPage())
 	} else {
-		tree.root = tree.alloc(splitted[0])
+		tree.root = tree.pager.allocate(splitted[0].asPage())
 	}
 	return insertRes
 }
@@ -154,12 +155,12 @@ func (tree *Btree) Insert(key, value []byte) {
 		root.setHeader(BTREE_LEAF_NODE, 2)
 		nodeWriteAt(root, 0, 0, nil, nil)
 		nodeWriteAt(root, 1, 0, key, value)
-		tree.root = tree.alloc(root)
+		tree.root = tree.pager.allocate(root.asPage())
 		return
 	}
 
-	node := tree.fetch(tree.root)
-	tree.free(tree.root)
+	node := tree.pager.load(tree.root).asBtreeNode()
+	tree.pager.free(tree.root)
 
 	node = treeInsert(tree, node, key, value)
 	nsplit, splitted := nodeSplit(node)
@@ -167,11 +168,11 @@ func (tree *Btree) Insert(key, value []byte) {
 		root := newBtreeNode()
 		root.setHeader(BTREE_INTERNAL_NODE, nsplit)
 		for i, child := range splitted[:nsplit] {
-			nodeWriteAt(root, uint16(i), tree.alloc(child), child.getKey(0), nil)
+			nodeWriteAt(root, uint16(i), tree.pager.allocate(child.asPage()), child.getKey(0), nil)
 		}
-		tree.root = tree.alloc(root)
+		tree.root = tree.pager.allocate(root.asPage())
 	} else {
-		tree.root = tree.alloc(splitted[0])
+		tree.root = tree.pager.allocate(splitted[0].asPage())
 	}
 }
 
@@ -204,12 +205,12 @@ func (tree *Btree) insertEx(node BtreeNode, key []byte, val []byte, mode InsertM
 	} else if node.getNodeType() == BTREE_INTERNAL_NODE {
 		// resursively insert the key-value pair into the child node
 		childPtr := node.getPointer(idx)
-		child := tree.fetch(childPtr)
+		child := tree.pager.load(childPtr).asBtreeNode()
 		newChild, res := tree.insertEx(child, key, val, mode)
 		if newChild == nil {
 			return nil, res
 		}
-		tree.free(childPtr)
+		tree.pager.free(childPtr)
 		// split the child node if it is too large
 		nsplit, splited := nodeSplit(*newChild)
 		updateChildren(tree, new, node, idx, idx+1, splited[:nsplit]...)
@@ -229,7 +230,7 @@ func treeGet(tree *Btree, node BtreeNode, key []byte) ([]byte, bool) {
 			return nil, false
 		}
 	} else if node.getNodeType() == BTREE_INTERNAL_NODE {
-		return treeGet(tree, tree.fetch(node.getPointer(idx)), key)
+		return treeGet(tree, tree.pager.load(node.getPointer(idx)).asBtreeNode(), key)
 	} else {
 		panic(fmt.Sprintf("invalid node type: %v", node.getNodeType()))
 	}
@@ -252,12 +253,12 @@ func treeDelete(tree *Btree, node BtreeNode, key []byte) *BtreeNode {
 		return &new
 	} else if node.getNodeType() == BTREE_INTERNAL_NODE {
 		childPtr := node.getPointer(idx)
-		child := tree.fetch(childPtr)
+		child := tree.pager.load(childPtr).asBtreeNode()
 		newChild := treeDelete(tree, child, key)
 		if newChild == nil {
 			return nil
 		}
-		tree.free(childPtr)
+		tree.pager.free(childPtr)
 
 		new := newBtreeNode()
 
@@ -269,11 +270,11 @@ func treeDelete(tree *Btree, node BtreeNode, key []byte) *BtreeNode {
 		merged := BtreeNode{data: make([]byte, PageSize)}
 		mergeNode(merged, *sibling, *newChild)
 		if mergeDir == mergeLeft {
-			tree.free(node.getPointer(idx - 1))
+			tree.pager.free(node.getPointer(idx - 1))
 			// replace the left sibling and the child pointer with the merged node
 			updateChildren(tree, new, node, idx-1, idx+1, merged)
 		} else {
-			tree.free(node.getPointer(idx + 1))
+			tree.pager.free(node.getPointer(idx + 1))
 			updateChildren(tree, new, node, idx, idx+2, merged)
 		}
 		return &new
@@ -304,9 +305,9 @@ func treeInsert(tree *Btree, node BtreeNode, key []byte, val []byte) BtreeNode {
 	} else if node.getNodeType() == BTREE_INTERNAL_NODE {
 		// resursively insert the key-value pair into the child node
 		childPtr := node.getPointer(idx)
-		child := tree.fetch(childPtr)
+		child := tree.pager.load(childPtr).asBtreeNode()
 		child = treeInsert(tree, child, key, val)
-		tree.free(childPtr)
+		tree.pager.free(childPtr)
 		// split the child node if it is too large
 		nsplit, splited := nodeSplit(child)
 		updateChildren(tree, new, node, idx, idx+1, splited[:nsplit]...)
@@ -387,7 +388,7 @@ func updateChildren(tree *Btree, new, old BtreeNode, start, end uint16, children
 	new.setHeader(BTREE_INTERNAL_NODE, newNKeys)
 	nodeCopyN(new, old, 0, 0, start)
 	for i, child := range children {
-		nodeWriteAt(new, start+uint16(i), tree.alloc(child), child.getKey(0), nil)
+		nodeWriteAt(new, start+uint16(i), tree.pager.allocate(child.asPage()), child.getKey(0), nil)
 	}
 	nodeCopyN(new, old, start+uint16(len(children)), end, old.getNkeys()-end)
 }
@@ -418,7 +419,7 @@ func shouldMerge(tree *Btree, parent BtreeNode, idx uint16, child BtreeNode) (me
 		return mergeNone, nil
 	}
 	if idx > 0 {
-		sibling := tree.fetch(parent.getPointer(idx - 1))
+		sibling := tree.pager.load(parent.getPointer(idx - 1)).asBtreeNode()
 		mergedSize := sibling.Size() + child.Size() - BTREE_NODE_HEADER_SIZE
 		if mergedSize <= uint16(PageSize) {
 			return mergeLeft, &sibling
@@ -426,7 +427,7 @@ func shouldMerge(tree *Btree, parent BtreeNode, idx uint16, child BtreeNode) (me
 
 	}
 	if idx+1 < parent.getNkeys() {
-		sibling := tree.fetch(parent.getPointer(idx + 1))
+		sibling := tree.pager.load(parent.getPointer(idx + 1)).asBtreeNode()
 		mergedSize := sibling.Size() + child.Size() - BTREE_NODE_HEADER_SIZE
 		if mergedSize <= uint16(PageSize) {
 			return mergeRight, &sibling
