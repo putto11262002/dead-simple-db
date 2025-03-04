@@ -2,6 +2,7 @@ package deadsimpledb
 
 import (
 	"bytes"
+	"encoding/binary"
 	"fmt"
 	"io"
 	"math"
@@ -10,6 +11,7 @@ import (
 	"text/template"
 
 	testAssert "github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func newLeafNodeFromMap(kv map[string]string) BtreeNode {
@@ -248,6 +250,154 @@ func maxKVSize(nKeys uint) uint {
 	lenSize := BTREE_KEY_LEN_SIZE*nKeys + BTREE_VALUE_LEN_SIZE*nKeys
 	fixed := BTREE_NODE_HEADER_SIZE + ptrSize + offsetSize + lenSize + nKeys
 	return uint(math.Floor(float64(PageSize-int(fixed)) / float64(nKeys)))
+}
+
+func encodeUint64Key(k uint64) []byte {
+	buf := make([]byte, 8)
+	binary.LittleEndian.PutUint64(buf, k)
+	return buf
+}
+
+func TestBtree(t *testing.T) {
+	t.Run("SeekLE", func(t *testing.T) {
+		keys := []uint64{1, 3, 6}
+		testCases := []struct {
+			seek     uint64
+			expected uint64
+			fail     bool
+		}{
+			{
+				seek:     3,
+				expected: 3,
+			},
+			{
+				seek:     2,
+				expected: 1,
+			},
+
+			{
+				seek:     7,
+				expected: 6,
+			},
+			{
+				seek: 0,
+				fail: true,
+			},
+		}
+
+		pager := newMemoryPager()
+		tree := newBtree(0, pager)
+		for _, k := range keys {
+			tree.Insert(encodeUint64Key(k), makeData(fmt.Sprintf("%d", k), PageSize/4))
+		}
+
+		for i, tc := range testCases {
+			t.Run(fmt.Sprint("testcase_", i+1), func(t *testing.T) {
+				iter := tree.SeekLE(encodeUint64Key(tc.seek))
+				if tc.fail {
+					_, _, ok := iter.Cur()
+					require.False(t, ok)
+				} else {
+					key, _, ok := iter.Cur()
+					require.True(t, ok)
+					require.Equal(t, encodeUint64Key(tc.expected), key)
+				}
+			})
+		}
+	})
+
+	t.Run("Seek", func(t *testing.T) {
+		keys := []uint64{1, 3, 6}
+		testCaeses := []struct {
+			seek     uint64
+			cmp      Cmp
+			expected uint64
+			fail     bool
+		}{
+			{
+				seek:     3,
+				cmp:      CmpGE,
+				expected: 3,
+			},
+			{
+				seek:     2,
+				cmp:      CmpGE,
+				expected: 3,
+			},
+			{
+				seek: 42,
+				cmp:  CmpGE,
+				fail: true,
+			},
+			{
+				seek:     3,
+				cmp:      CmpGT,
+				expected: 6,
+			},
+			{
+				seek:     2,
+				cmp:      CmpGT,
+				expected: 3,
+			},
+			{
+				seek: 101,
+				cmp:  CmpGT,
+				fail: true,
+			},
+			{
+				seek:     3,
+				cmp:      CmpLE,
+				expected: 3,
+			},
+			{
+				seek:     4,
+				cmp:      CmpLE,
+				expected: 3,
+			},
+			{
+				seek: 0,
+				cmp:  CmpLE,
+				fail: true,
+			},
+			{
+				seek:     3,
+				cmp:      CmpLT,
+				expected: 1,
+			},
+			{
+				seek:     4,
+				cmp:      CmpLT,
+				expected: 3,
+			},
+			{
+				seek: 1,
+				cmp:  CmpLT,
+				fail: true,
+			},
+		}
+
+		pager := newMemoryPager()
+		tree := newBtree(0, pager)
+		for _, k := range keys {
+			tree.Insert(encodeUint64Key(k), makeData(fmt.Sprintf("%d", k), PageSize/4))
+		}
+
+		for i, tc := range testCaeses {
+			t.Run(fmt.Sprint("testcase_", i+1), func(t *testing.T) {
+				iter := tree.Seek(encodeUint64Key(tc.seek), tc.cmp)
+				if tc.fail {
+					require.Falsef(t, iter.isValid(), "expected Seek to fail")
+				} else {
+					require.NotNil(t, iter)
+					require.True(t, iter.isValid())
+					k, _, ok := iter.Cur()
+					require.True(t, ok)
+					require.Equal(t, encodeUint64Key(tc.expected), k)
+				}
+			})
+
+		}
+	})
 }
 
 //
