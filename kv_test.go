@@ -29,8 +29,8 @@ func TestKV(t *testing.T) {
 	// Helper function to create a new KV store for each test
 	setupKV := func(t *testing.T, name string) *KV {
 		dbPath := filepath.Join(testDir, fmt.Sprintf("%s.db", name))
-		db := NewKV(dbPath)
-		require.NoError(t, db.Open())
+		db, err := NewKV(dbPath)
+		require.NoError(t, err)
 		return db
 	}
 
@@ -268,8 +268,8 @@ func TestKV(t *testing.T) {
 
 		// Setup: Create and populate a database
 		{
-			db := NewKV(dbPath)
-			require.NoError(t, db.Open())
+			db, err := NewKV(dbPath)
+			require.NoError(t, err)
 
 			// Insert a mix of key-value pairs of different sizes
 			for i, tc := range testCases {
@@ -284,8 +284,8 @@ func TestKV(t *testing.T) {
 
 		// Test: Reopen the database and verify data persisted
 		{
-			db := NewKV(dbPath)
-			require.NoError(t, db.Open())
+			db, err := NewKV(dbPath)
+			require.NoError(t, err)
 			defer db.Close()
 
 			// Verify all key-value pairs still exist

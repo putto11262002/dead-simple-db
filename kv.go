@@ -25,41 +25,38 @@ type KV struct {
 	logger *slog.Logger
 }
 
-func NewKV(path string) *KV {
-	return &KV{
+func NewKV(path string) (*KV, error) {
+	kv := &KV{
 		path:   path,
 		logger: slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelDebug})),
 	}
 
-}
-
-func (db *KV) Open() error {
 	fail := func(err error) error {
-		if db.pager != nil {
-			db.pager.close()
+		if kv.pager != nil {
+			kv.pager.close()
 		}
-		db.Close()
+		kv.Close()
 		return err
 	}
 
-	f, err := os.OpenFile(db.path, os.O_RDWR|os.O_CREATE, 0644)
+	f, err := os.OpenFile(kv.path, os.O_RDWR|os.O_CREATE, 0644)
 	if err != nil {
-		return fail(fmt.Errorf("os.OpenFile: %w", err))
+		return nil, fail(fmt.Errorf("os.OpenFile: %w", err))
 	}
-	db.file = f
-	header, err := db.loadMasterPage()
+	kv.file = f
+	header, err := kv.loadMasterPage()
 	if err != nil {
-		return fail(fmt.Errorf("reading header: %w", err))
-	}
-
-	db.pager, err = newMmapPagerWithFreeList(db.file, header.flushed, header.freeList)
-	if err != nil {
-		return fail(fmt.Errorf("initializing pager: %w", err))
+		return nil, fail(fmt.Errorf("reading header: %w", err))
 	}
 
-	db.tree = newBtree(header.root, db.pager)
+	kv.pager, err = newMmapPagerWithFreeList(kv.file, header.flushed, header.freeList)
+	if err != nil {
+		return nil, fail(fmt.Errorf("initializing pager: %w", err))
+	}
 
-	return nil
+	kv.tree = newBtree(header.root, kv.pager)
+
+	return kv, nil
 
 }
 
