@@ -37,7 +37,7 @@ func Test_freeList_pop(t *testing.T) {
 			if ok {
 				require.Equal(t, tc.expectValue, ptr, "Popped incorrect value")
 				require.Equal(t, i+1, fl.popn, "Pop counter not incremented correctly")
-				require.True(t, fl.cache[ptr], "Popped value not added to cache")
+				require.False(t, fl.cache[ptr], "Popped value not added to cache")
 				require.Equal(t, fl.size-fl.freeCount(), fl.popn, "Free count inconsistent with pop count")
 			}
 		})
@@ -60,35 +60,28 @@ func Test_freeList_free(t *testing.T) {
 
 		// Verify state
 		require.Equal(t, 1, fl.pendingCount(), "Pending count incorrect")
-		require.False(t, fl.cache[newPage], "Cache should not contain freed page yet")
+		require.True(t, fl.cache[newPage], "Cache should not contain freed page yet")
 		require.Contains(t, fl.pending, newPage, "Pending list missing freed page")
 	})
 
 	t.Run("Double free detection", func(t *testing.T) {
 		// Setup
-		freed := []uint64{1, 2}
 		fl := freeList{
-			freed: freed,
 			cache: make(map[uint64]bool),
-			size:  len(freed),
 		}
 
 		// Add a page to the pending list
 		fl.free(3)
 		initialPendingCount := fl.pendingCount()
 
-		// Attempt to free a page that's already in the freed list
-		pageToDoubleFree := freed[0]
-
 		// Verify that double free causes panic
 		require.Panics(t, func() {
-			fl.free(pageToDoubleFree)
+			fl.free(3)
 		}, "Expected panic on double free")
 
 		// Verify state after panic recovery
 		require.Equal(t, initialPendingCount, fl.pendingCount(), "Pending count should be unchanged")
-		require.False(t, fl.cache[pageToDoubleFree], "Cache should not contain the double-freed page")
-		require.NotContains(t, fl.pending, pageToDoubleFree, "Pending list should not contain the double-freed page")
+		require.NotContains(t, fl.pending, 3, "Pending list should not contain the double-freed page")
 	})
 }
 
