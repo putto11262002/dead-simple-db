@@ -45,7 +45,7 @@ func (iter *BtreeIter) stackPopN(n int) {
 //     first moving to the parent node and continuing until the parent node's idx is less than nkeys-1,
 //     then it keeps moving to the right sibling node until a leaf node is reached.
 func (iter *BtreeIter) next() bool {
-	if !iter.isValid() {
+	if !iter.isIterable() {
 		return false
 	}
 
@@ -82,13 +82,12 @@ func (iter *BtreeIter) next() bool {
 	return true
 }
 
-// isValid returns true if the iterator is in a valid state; otherwise, it returns false.
+// isIterable returns true if the iterator is in a valid state; otherwise, it returns false.
 // The iterator is considered invalid when:
 // 1. The cursor is nil.
 // 2. The cursor points to an internal node.
 // 3. The cursor's index is out of bounds.
-// 4. The cursor points to a dummy key.
-func (iter BtreeIter) isValid() bool {
+func (iter BtreeIter) isIterable() bool {
 	if iter.cursor == nil {
 		return false
 	}
@@ -98,15 +97,12 @@ func (iter BtreeIter) isValid() bool {
 	if iter.cursor.idx < 0 || iter.cursor.idx >= iter.cursor.node.getNkeys() {
 		return false
 	}
-	if isDummyKey(iter.cursor.node, iter.cursor.idx) {
-		return false
-	}
 	return true
 }
 
 // Cur returns the current key and value the iterator points to. If the iterator is invalid, it returns nil values and false.
 func (iter BtreeIter) Cur() ([]byte, []byte, bool) {
-	if !iter.isValid() {
+	if !iter.isIterable() || isDummyKey(iter.cursor.node, iter.cursor.idx) {
 		return nil, nil, false
 	}
 	key := iter.cursor.node.getKey(iter.cursor.idx)
@@ -133,7 +129,7 @@ func isDummyKey(node BtreeNode, idx uint16) bool {
 
 // prev moves the cursor to the previous key. If there is no previous key, false is returned and the iterator becomes invalid.
 func (iter *BtreeIter) prev() bool {
-	if !iter.isValid() {
+	if !iter.isIterable() {
 		return false
 	}
 	if isDummyKey(iter.cursor.node, iter.cursor.idx-1) {
@@ -201,6 +197,9 @@ func (tree *Btree) Seek(key []byte, cmp Cmp) *BtreeIter {
 	iter := tree.SeekLE(key)
 	if cmp == CmpLE {
 		return iter
+	}
+	if cmp > 0 && isDummyKey(iter.cursor.node, iter.cursor.idx) {
+		iter.next()
 	}
 	k, _, ok := iter.Cur()
 	if !ok {

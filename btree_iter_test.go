@@ -38,7 +38,7 @@ func TestBtreeIter(t *testing.T) {
 	t.Run("next", func(t *testing.T) {
 		btreeIter := btree.SeekLE(kvs[0].key)
 		require.NotNil(t, btreeIter)
-		require.True(t, btreeIter.isValid(), "btreeIter should be valid")
+		require.True(t, btreeIter.isIterable(), "btreeIter should be valid")
 
 		for i, kv := range kvs {
 			key, val, ok := btreeIter.Cur()
@@ -49,7 +49,7 @@ func TestBtreeIter(t *testing.T) {
 			ok = btreeIter.next()
 			if i == btreeSize-1 {
 				require.Falsef(t, ok, "kv %d: next should return false", i)
-				require.Falsef(t, btreeIter.isValid(), "btreeIter should be invalid")
+				require.Falsef(t, btreeIter.isIterable(), "btreeIter should be invalid")
 			} else {
 				require.Truef(t, ok, "kv %d: next should return true", i)
 			}
@@ -59,7 +59,7 @@ func TestBtreeIter(t *testing.T) {
 	t.Run("prev", func(t *testing.T) {
 		btreeIter := btree.SeekLE(kvs[btreeSize-1].key)
 		require.NotNil(t, btreeIter)
-		require.True(t, btreeIter.isValid(), "btreeIter should be valid")
+		require.True(t, btreeIter.isIterable(), "btreeIter should be valid")
 
 		for i := btreeSize - 1; i >= 0; i-- {
 			kv := kvs[i]
@@ -71,7 +71,7 @@ func TestBtreeIter(t *testing.T) {
 			ok = btreeIter.prev()
 			if i == 0 {
 				require.Falsef(t, ok, "kv %d: prev should return false", i)
-				require.Falsef(t, btreeIter.isValid(), "btreeIter should be invalid")
+				require.Falsef(t, btreeIter.isIterable(), "btreeIter should be invalid")
 			} else {
 				require.Truef(t, ok, "kv %d: prev should return true", i)
 			}

@@ -311,33 +311,39 @@ func TestBtree(t *testing.T) {
 		testCaeses := []struct {
 			seek     uint64
 			cmp      Cmp
-			expected uint64
+			cursorAt uint64
 			fail     bool
 		}{
 			{
 				seek:     3,
 				cmp:      CmpGE,
-				expected: 3,
+				cursorAt: 3,
 			},
 			{
 				seek:     2,
 				cmp:      CmpGE,
-				expected: 3,
+				cursorAt: 3,
 			},
 			{
 				seek: 42,
 				cmp:  CmpGE,
 				fail: true,
 			},
+			// Seek value that is less than the smallest key
+			{
+				seek:     0,
+				cmp:      CmpGE,
+				cursorAt: 1,
+			},
 			{
 				seek:     3,
 				cmp:      CmpGT,
-				expected: 6,
+				cursorAt: 6,
 			},
 			{
 				seek:     2,
 				cmp:      CmpGT,
-				expected: 3,
+				cursorAt: 3,
 			},
 			{
 				seek: 101,
@@ -347,12 +353,12 @@ func TestBtree(t *testing.T) {
 			{
 				seek:     3,
 				cmp:      CmpLE,
-				expected: 3,
+				cursorAt: 3,
 			},
 			{
 				seek:     4,
 				cmp:      CmpLE,
-				expected: 3,
+				cursorAt: 3,
 			},
 			{
 				seek: 0,
@@ -362,12 +368,12 @@ func TestBtree(t *testing.T) {
 			{
 				seek:     3,
 				cmp:      CmpLT,
-				expected: 1,
+				cursorAt: 1,
 			},
 			{
 				seek:     4,
 				cmp:      CmpLT,
-				expected: 3,
+				cursorAt: 3,
 			},
 			{
 				seek: 1,
@@ -385,14 +391,13 @@ func TestBtree(t *testing.T) {
 		for i, tc := range testCaeses {
 			t.Run(fmt.Sprint("testcase_", i+1), func(t *testing.T) {
 				iter := tree.Seek(encodeUint64Key(tc.seek), tc.cmp)
+				k, _, ok := iter.Cur()
 				if tc.fail {
-					require.Falsef(t, iter.isValid(), "expected Seek to fail")
+					require.Falsef(t, ok, "expected Seek to fail")
 				} else {
 					require.NotNil(t, iter)
-					require.True(t, iter.isValid())
-					k, _, ok := iter.Cur()
 					require.True(t, ok)
-					require.Equal(t, encodeUint64Key(tc.expected), k)
+					require.Equal(t, encodeUint64Key(tc.cursorAt), k)
 				}
 			})
 
